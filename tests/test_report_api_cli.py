@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from agent_ci_failure_correlator.api import analyze, analyze_paths, analyze_records
+import agent_ci_failure_correlator.cli as cli_module
 from agent_ci_failure_correlator.cli import (
     EXIT_CROSS_REPOSITORY_REPEATS,
     EXIT_SUCCESS,
@@ -161,6 +162,43 @@ class ReportApiCliTests(unittest.TestCase):
             input_path.write_text("error", encoding="utf-8")
             code = main(["analyze", str(input_path), "--config", str(config)])
         self.assertEqual(code, EXIT_USAGE_ERROR)
+
+    def test_cli_fetch_github_writes_analyzable_jsonl(self):
+        class FakeClient:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+            def list_workflow_runs(self, repository, *, page, per_page, branch="", created=""):
+                if page > 1:
+                    return []
+                return [
+                    {
+                        "id": 9,
+                        "name": "CI",
+                        "conclusion": "failure",
+                        "html_url": f"https://github.com/{repository}/actions/runs/9",
+                    }
+                ]
+
+            def list_run_jobs(self, repository, run_id):
+                return [{"id": 99, "name": "tests", "conclusion": "failure"}]
+
+            def download_job_log(self, repository, job_id):
+                return "ModuleNotFoundError: No module named shared_auth"
+
+        original = cli_module._github_client_factory
+        cli_module._github_client_factory = FakeClient
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp) / "failures.jsonl"
+                code = main(["fetch-github", "org/api", "--output", str(output), "--limit", "5"])
+                self.assertEqual(code, EXIT_SUCCESS)
+                result = analyze_paths([str(output)], config=CorrelatorConfig.default())
+                self.assertEqual(1, len(result.events))
+                self.assertEqual("org/api", result.events[0].source.repository)
+                self.assertIn("python-import", result.events[0].root_cause_labels)
+        finally:
+            cli_module._github_client_factory = original
 
 
 if __name__ == "__main__":

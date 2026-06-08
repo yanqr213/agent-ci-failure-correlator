@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-ci-failure-correlator"
-version = "0.4.0"
+version = "0.5.0"
 description = "Normalize and correlate recurring CI failures across repositories."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -12,7 +12,7 @@ license = { text = "MIT" }
 authors = [
   { name = "agent-ci-failure-correlator contributors" }
 ]
-keywords = ["ci", "devops", "github-actions", "pytest", "npm", "codex", "claude-code"]
+keywords = ["ci", "devops", "github-actions", "pytest", "npm", "codex", "claude-code", "triage"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",

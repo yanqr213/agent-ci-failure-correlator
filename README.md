@@ -15,11 +15,13 @@ The complete English guide is available below in [English](#english).
 - 跨仓库重复失败聚类
 - 可直接发给维护者或 agent 的 Markdown 报告
 - 可接入自动化与 GitHub Code Scanning 的 JSON/SARIF 报告和退出码
+- 从 GitHub Actions API 抓取最近失败 run/job，导出 JSONL 后离线聚类
 
 ## 功能
 
 - 支持输入：GitHub workflow run JSON、job JSON、JSONL/NDJSON、纯日志、JUnit XML、工具自身导出的 JSON。
 - 支持 GitHub Actions 失败通知邮件：`.eml` 原文或转存 `.txt` 都会提取仓库、workflow、job、branch、run id 和 run URL。
+- 支持 GitHub Actions API 抓取：按仓库、分支、workflow、时间范围抓取失败 job，并对日志做常见 secret 脱敏。
 - 日志摘要：提取错误、失败、Traceback、timeout、npm/pytest 等关键行，并保留上下文。
 - 噪声归一化：隐藏路径、URL、时间戳、长哈希、版本号、持续时间和大数字。
 - 规则标签：识别 Python import、JavaScript dependency、测试断言、网络、超时、权限、lint、类型检查、构建、runner 环境、容器等根因。
@@ -102,6 +104,21 @@ python -m agent_ci_failure_correlator analyze examples/inputs \
 python -m agent_ci_failure_correlator init-config --output ci-failure-correlator.json
 ```
 
+直接从 GitHub Actions 抓取最近失败记录，保存为可复用的 JSONL，再交给 `analyze`：
+
+```bash
+export GITHUB_TOKEN=your_actions_read_token
+
+python -m agent_ci_failure_correlator fetch-github org/api-service org/webapp \
+  --days 7 \
+  --branch main \
+  --output exported-failures.jsonl
+
+python -m agent_ci_failure_correlator analyze exported-failures.jsonl \
+  --format brief \
+  --output ci-failure-brief.md
+```
+
 常用参数：
 
 - `--similarity-threshold 0.56`：调整聚类阈值，越低越容易合并。
@@ -110,6 +127,42 @@ python -m agent_ci_failure_correlator init-config --output ci-failure-correlator
 - `--fail-on-cross-repo`：发现跨仓库重复失败时返回 `2`。
 - `--fail-on-any-failure`：发现任何失败时返回 `1`。
 - `--no-raw-events`：JSON 报告中不包含原始日志文本。
+
+`fetch-github` 常用参数：
+
+- `--repo-file repos.txt`：从文件读取仓库列表，一行一个 `owner/name`，支持 `#` 注释。
+- `--token-env GITHUB_TOKEN,GH_TOKEN`：从指定环境变量读取 token。公开仓库可不传 token，但容易遇到 rate limit；私有仓库需要 token 有 Actions 读取权限。
+- `--workflow CI` / `--branch main`：缩小抓取范围。
+- `--since 2026-06-01T00:00:00Z` 或 `--days 14`：限制时间窗口。
+- `--no-logs`：只导出 run/job 元数据，不下载 job log。
+- `--log-chars 20000`：限制每个 job 写入的脱敏日志长度。
+
+导出的 JSONL 不会写入 token；日志会脱敏常见 `Authorization`、GitHub token、OpenAI key、Slack token、`password=`、`api_key=` 等形态。真正敏感的业务日志仍建议只在私有环境保存。
+
+### 从 GitHub 抓取失败记录
+
+`fetch-github` 适合你已经知道一组仓库，并希望快速把最近失败 run 拉下来做聚类的场景：
+
+```bash
+cat > repos.txt <<'EOF'
+org/api-service
+org/billing-service
+org/webapp
+EOF
+
+python -m agent_ci_failure_correlator fetch-github \
+  --repo-file repos.txt \
+  --workflow CI \
+  --days 3 \
+  --output failures.jsonl
+
+python -m agent_ci_failure_correlator analyze failures.jsonl \
+  --similarity-threshold 0.56 \
+  --format markdown \
+  --output reports/ci-failure-report.md
+```
+
+JSONL 每一行是一条失败 job 记录，包含 `repository`、`workflow`、`run_id`、`job_name`、`conclusion`、`url`、`steps` 和脱敏后的 `log`。这些字段会被现有 parser 归一化为标准 `FailureEvent`，因此 brief、Markdown、JSON、SARIF 输出都可以直接复用。
 
 ### 处理 GitHub Actions 失败邮件
 
@@ -163,6 +216,23 @@ records = [
 ]
 
 result = analyze_records(records)
+print(result.to_dict()["summary"])
+```
+
+从 GitHub API 抓取后直接在内存中分析：
+
+```python
+from agent_ci_failure_correlator import CorrelatorConfig, GitHubClient, GitHubFetchOptions, fetch_failed_jobs
+from agent_ci_failure_correlator.api import analyze_records
+
+client = GitHubClient(token="...", timeout=20)
+fetched = fetch_failed_jobs(
+    ["org/api-service", "org/webapp"],
+    GitHubFetchOptions(days=7, per_repo_limit=10),
+    client=client,
+)
+
+result = analyze_records(fetched.records, config=CorrelatorConfig(similarity_threshold=0.56))
 print(result.to_dict()["summary"])
 ```
 
@@ -357,13 +427,14 @@ python -m agent_ci_failure_correlator analyze examples/inputs --format json --ou
 - `agent_ci_failure_correlator/rules.py`：根因规则与修复建议。
 - `agent_ci_failure_correlator/clusterer.py`：相似度聚类与置信度。
 - `agent_ci_failure_correlator/report.py`：Markdown/JSON/SARIF 报告。
+- `agent_ci_failure_correlator/github_fetcher.py`：GitHub Actions API 抓取与日志脱敏。
 - `agent_ci_failure_correlator/cli.py`：命令行入口与退出码。
 - `tests/`：单元测试。
 - `examples/`：配置和示例输入。
 
 ## 设计边界
 
-本项目不调用外网，不上传日志，不依赖 LLM，也不包含任何真实 token 或个人信息。它适合作为 Codex/Claude Code 前置整理器：先把失败聚类成几类可修复问题，再把报告交给 agent 或维护者执行修复。
+常规分析不调用外网，不上传日志，不依赖 LLM，也不包含任何真实 token 或个人信息。只有显式运行 `fetch-github` 时，工具才会调用 GitHub API 读取你指定仓库的 Actions 元数据和 job logs；所有聚类分析仍在本地完成。它适合作为 Codex/Claude Code 前置整理器：先把失败聚类成几类可修复问题，再把报告交给 agent 或维护者执行修复。
 
 ---
 
@@ -385,11 +456,13 @@ This tool produces:
 - JSON reports for automation
 - SARIF reports for GitHub Code Scanning
 - CI-friendly exit codes
+- GitHub Actions API fetching for recent failed jobs
 
 ### Features
 
 - Inputs: GitHub workflow run JSON, job JSON, JSONL/NDJSON, plain logs, JUnit XML, and exported correlator JSON.
 - GitHub Actions failure notifications: parse saved `.eml` messages or copied `.txt` bodies and extract repository, workflow, job, branch, run id, and run URL.
+- GitHub Actions API fetcher: collect recent failed runs/jobs by repository, branch, workflow, and time window, then export JSONL for offline analysis.
 - Log summarization: extracts error-bearing lines and local context.
 - Normalization: removes volatile paths, URLs, timestamps, hashes, versions, durations, and large numbers.
 - Rule labels: Python import, JavaScript dependency, assertion, network, timeout, permissions, lint, type-check, build tooling, runner environment, and container failures.
@@ -468,6 +541,21 @@ Create a starter config:
 python -m agent_ci_failure_correlator init-config --output ci-failure-correlator.json
 ```
 
+Fetch recent GitHub Actions failures, then analyze them:
+
+```bash
+export GITHUB_TOKEN=your_actions_read_token
+
+python -m agent_ci_failure_correlator fetch-github org/api-service org/webapp \
+  --days 7 \
+  --branch main \
+  --output exported-failures.jsonl
+
+python -m agent_ci_failure_correlator analyze exported-failures.jsonl \
+  --format brief \
+  --output ci-failure-brief.md
+```
+
 Useful flags:
 
 - `--similarity-threshold 0.56`: lower values merge more aggressively.
@@ -476,6 +564,42 @@ Useful flags:
 - `--fail-on-cross-repo`: exit `2` when a repeated failure spans repositories.
 - `--fail-on-any-failure`: exit `1` when any failure is found.
 - `--no-raw-events`: omit raw log bodies from JSON output.
+
+Useful `fetch-github` flags:
+
+- `--repo-file repos.txt`: read repositories from a newline-delimited file.
+- `--token-env GITHUB_TOKEN,GH_TOKEN`: choose token environment variables. Public repositories may work without a token, but private repositories and larger scans need one with Actions read access.
+- `--workflow CI` / `--branch main`: narrow the scan.
+- `--since 2026-06-01T00:00:00Z` or `--days 14`: control the time window.
+- `--no-logs`: emit run/job metadata without downloading job logs.
+- `--log-chars 20000`: cap each redacted job log.
+
+Fetched JSONL records do not contain the token. Logs are redacted for common `Authorization`, GitHub token, OpenAI key, Slack token, `password=`, and `api_key=` shapes, but sensitive business logs should still stay in a private workspace.
+
+### Fetch From GitHub
+
+Use `fetch-github` when you know the repositories and want to turn recent failed Actions runs into correlator input:
+
+```bash
+cat > repos.txt <<'EOF'
+org/api-service
+org/billing-service
+org/webapp
+EOF
+
+python -m agent_ci_failure_correlator fetch-github \
+  --repo-file repos.txt \
+  --workflow CI \
+  --days 3 \
+  --output failures.jsonl
+
+python -m agent_ci_failure_correlator analyze failures.jsonl \
+  --similarity-threshold 0.56 \
+  --format markdown \
+  --output reports/ci-failure-report.md
+```
+
+Each JSONL row is one failed job with `repository`, `workflow`, `run_id`, `job_name`, `conclusion`, `url`, `steps`, and redacted `log`. The normal parser turns those records into `FailureEvent` objects, so brief, Markdown, JSON, and SARIF reports all work unchanged.
 
 ### GitHub Actions Failure Emails
 
@@ -529,6 +653,23 @@ records = [
 ]
 
 result = analyze_records(records)
+print(result.to_dict()["summary"])
+```
+
+Fetch from GitHub and analyze in memory:
+
+```python
+from agent_ci_failure_correlator import CorrelatorConfig, GitHubClient, GitHubFetchOptions, fetch_failed_jobs
+from agent_ci_failure_correlator.api import analyze_records
+
+client = GitHubClient(token="...", timeout=20)
+fetched = fetch_failed_jobs(
+    ["org/api-service", "org/webapp"],
+    GitHubFetchOptions(days=7, per_repo_limit=10),
+    client=client,
+)
+
+result = analyze_records(fetched.records, config=CorrelatorConfig(similarity_threshold=0.56))
 print(result.to_dict()["summary"])
 ```
 
@@ -632,4 +773,4 @@ python -m unittest discover -s tests -v
 python -m agent_ci_failure_correlator analyze examples/inputs --format json --output report.json
 ```
 
-The project has no runtime dependency outside the Python standard library. It does not call external services, upload logs, or contain real credentials.
+The project has no runtime dependency outside the Python standard library. Normal analysis does not call external services, upload logs, or contain real credentials. The `fetch-github` command calls the GitHub API only when you explicitly run it, and all correlation still happens locally.
