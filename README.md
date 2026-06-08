@@ -27,7 +27,7 @@ The complete English guide is available below in [English](#english).
 - 规则标签：识别 Python import、JavaScript dependency、测试断言、网络、超时、权限、lint、类型检查、构建、runner 环境、容器等根因。
 - 相似度聚类：结合标签相似度、token Jaccard、文本相似度、命令和语言信号。
 - 置信度与证据：输出共享 token、平均/最低 pair similarity、代表性摘要。
-- 报告：brief 给快速分派，Markdown 给完整人工阅读，JSON 给自动化和 agent 读，SARIF 给 GitHub Code Scanning。
+- 报告：brief 给快速分派，repair queue 给 agent/维护者逐项修复，Markdown 给完整人工阅读，JSON 给自动化和 agent 读，SARIF 给 GitHub Code Scanning。
 - 退出码语义：可在 CI 中作为门禁使用。
 - 无外部运行依赖：优先 Python 标准库，兼容 Python 3.9+。
 
@@ -81,6 +81,23 @@ python -m agent_ci_failure_correlator analyze examples/inputs \
   --output ci-failure-brief.md
 ```
 
+输出按优先级排序的修复队列，适合分派给 Codex、Claude Code 或维护者：
+
+```bash
+python -m agent_ci_failure_correlator analyze examples/inputs \
+  --format queue \
+  --output repair-queue.md \
+  --max-tasks 5
+```
+
+输出机器可读的修复队列 JSON：
+
+```bash
+python -m agent_ci_failure_correlator analyze examples/inputs \
+  --format queue-json \
+  --output repair-queue.json
+```
+
 输出 SARIF，方便上传到 GitHub Code Scanning：
 
 ```bash
@@ -123,7 +140,8 @@ python -m agent_ci_failure_correlator analyze exported-failures.jsonl \
 
 - `--similarity-threshold 0.56`：调整聚类阈值，越低越容易合并。
 - `--min-cluster-size 2`：只报告至少 N 个事件的聚类。
-- `--format brief|markdown|json|sarif`：brief 适合先处理 CI 邮件批量分派，Markdown 适合完整阅读，JSON 适合自动化，SARIF 适合 Code Scanning。
+- `--format brief|queue|queue-json|markdown|json|sarif`：brief 适合收件箱快速分流，queue 适合生成可执行修复任务，queue-json 适合 agent/机器人读取，Markdown 适合完整阅读，JSON 适合自动化，SARIF 适合 Code Scanning。
+- `--max-tasks 5`：限制 `queue` / `queue-json` 只输出最高优先级的 N 个修复任务。
 - `--fail-on-cross-repo`：发现跨仓库重复失败时返回 `2`。
 - `--fail-on-any-failure`：发现任何失败时返回 `1`。
 - `--no-raw-events`：JSON 报告中不包含原始日志文本。
@@ -338,6 +356,33 @@ Agent handoff:
 - Fix cross-repository repeated clusters first; one shared dependency or runner change may clear multiple emails.
 ```
 
+repair queue 报告会把每个聚类转成可分派任务：
+
+````markdown
+# CI Failure Repair Queue
+
+## Queue
+
+### T001 [P0] Fix cross-repository python-import CI failures
+
+- Owner hint: `runtime/dependency-owner`
+- Scope: `3` events across `3` repositories
+- Labels: `python-import`
+
+**Suggested actions**
+
+- Check Python dependencies, editable installs, package names, and PYTHONPATH/package discovery.
+
+**Agent prompt**
+
+```text
+You are assigned repair task T001: Fix cross-repository python-import CI failures.
+Before editing code, reproduce or inspect the representative failure, then apply the smallest shared fix.
+```
+````
+
+`queue-json` 使用同一批字段输出机器可读结构，包含 `priority`、`score`、`owner_hint`、`affected_jobs`、`run_links`、`suggested_actions` 和 `agent_prompt`。它适合把“很多 CI 失败邮件”变成 agent 可以逐条认领的修复队列。
+
 ## 退出码语义
 
 - `0`：分析完成，未触发门禁。
@@ -453,6 +498,7 @@ This tool produces:
 - cross-repository repeat detection
 - Markdown reports for humans and agents
 - brief triage reports for fast agent handoff
+- repair queue reports with prioritized tasks and ready-to-use agent prompts
 - JSON reports for automation
 - SARIF reports for GitHub Code Scanning
 - CI-friendly exit codes
@@ -518,6 +564,23 @@ python -m agent_ci_failure_correlator analyze examples/inputs \
   --output ci-failure-brief.md
 ```
 
+Generate a prioritized repair queue for maintainers or coding agents:
+
+```bash
+python -m agent_ci_failure_correlator analyze examples/inputs \
+  --format queue \
+  --output repair-queue.md \
+  --max-tasks 5
+```
+
+Generate a machine-readable repair queue:
+
+```bash
+python -m agent_ci_failure_correlator analyze examples/inputs \
+  --format queue-json \
+  --output repair-queue.json
+```
+
 Generate SARIF for GitHub Code Scanning:
 
 ```bash
@@ -560,7 +623,8 @@ Useful flags:
 
 - `--similarity-threshold 0.56`: lower values merge more aggressively.
 - `--min-cluster-size 2`: report only clusters with at least N events.
-- `--format brief|markdown|json|sarif`: use brief for first-pass inbox triage, JSON for automation, and SARIF for Code Scanning.
+- `--format brief|queue|queue-json|markdown|json|sarif`: use brief for first-pass inbox triage, queue for executable repair tasks, queue-json for bots or agents, JSON for automation, and SARIF for Code Scanning.
+- `--max-tasks 5`: limit `queue` and `queue-json` output to the top N repair tasks.
 - `--fail-on-cross-repo`: exit `2` when a repeated failure spans repositories.
 - `--fail-on-any-failure`: exit `1` when any failure is found.
 - `--no-raw-events`: omit raw log bodies from JSON output.
@@ -711,6 +775,27 @@ The bundled inputs currently produce 7 events, 4 clusters, and 2 cross-repositor
 - **C001** `python-import`: 3 events across 3 repositories (...), confidence 0.74
 - **C002** `javascript-dependency`: 2 events across 2 repositories (...), confidence 0.76
 ```
+
+Repair queue output turns clusters into assignable work:
+
+````markdown
+# CI Failure Repair Queue
+
+### T001 [P0] Fix cross-repository python-import CI failures
+
+- Owner hint: `runtime/dependency-owner`
+- Scope: `3` events across `3` repositories
+- Labels: `python-import`
+
+**Agent prompt**
+
+```text
+You are assigned repair task T001: Fix cross-repository python-import CI failures.
+Before editing code, reproduce or inspect the representative failure, then apply the smallest shared fix.
+```
+````
+
+The `queue-json` format exposes the same task fields for bots and agents: `priority`, `score`, `owner_hint`, `affected_jobs`, `run_links`, `suggested_actions`, and `agent_prompt`.
 
 ### Exit Codes
 

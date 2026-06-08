@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0 - 2026-06-09
+
+- Added `queue` and `queue-json` report formats that turn failure clusters into prioritized repair tasks.
+- Added task scoring, owner hints, affected job tables, run links, suggested actions, and ready-to-use agent prompts.
+- Exposed `build_triage_queue`, `render_queue_markdown`, `render_queue_json`, and `TriageTask` in the Python API.
+- Added CLI `--max-tasks` for queue reports and GitHub Actions smoke coverage for the new formats.
+- Expanded Chinese and English documentation for repair queue workflows.
+
 ## 0.5.0 - 2026-06-08
 
 - Added `fetch-github` to collect recent failed GitHub Actions jobs into JSONL records.

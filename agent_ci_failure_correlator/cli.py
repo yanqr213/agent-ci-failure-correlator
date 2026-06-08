@@ -14,6 +14,7 @@ from .config import CorrelatorConfig, load_config
 from .github_fetcher import GitHubClient, GitHubFetchOptions, fetch_failed_jobs, read_repositories, render_jsonl, token_from_environment
 from .models import AnalysisResult
 from .report import render_brief, render_json, render_markdown, render_sarif
+from .triage import render_queue_json, render_queue_markdown
 
 EXIT_SUCCESS = 0
 EXIT_FAILURES_FOUND = 1
@@ -50,9 +51,10 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("inputs", nargs="+", help="Input files or directories (.json, .jsonl, .xml, .log, .txt).")
     analyze.add_argument("-c", "--config", help="Path to JSON configuration file.")
     analyze.add_argument("-o", "--output", help="Output report path. Defaults to stdout.")
-    analyze.add_argument("--format", choices=["brief", "markdown", "json", "sarif"], default="markdown", help="Report format.")
+    analyze.add_argument("--format", choices=["brief", "markdown", "json", "sarif", "queue", "queue-json"], default="markdown", help="Report format.")
     analyze.add_argument("--similarity-threshold", type=float, help="Override similarity threshold.")
     analyze.add_argument("--min-cluster-size", type=int, help="Override minimum cluster size.")
+    analyze.add_argument("--max-tasks", type=int, help="Limit queue/queue-json output to the top N repair tasks.")
     analyze.add_argument("--fail-on-cross-repo", action="store_true", help="Exit 2 when repeated failures span repositories.")
     analyze.add_argument("--fail-on-any-failure", action="store_true", help="Exit 1 when any failure is detected.")
     analyze.add_argument("--no-raw-events", action="store_true", help="Omit raw event bodies from JSON output.")
@@ -108,6 +110,10 @@ def _analyze(args: argparse.Namespace) -> int:
         output = render_sarif(result)
     elif args.format == "brief":
         output = render_brief(result)
+    elif args.format == "queue":
+        output = render_queue_markdown(result, max_tasks=args.max_tasks)
+    elif args.format == "queue-json":
+        output = render_queue_json(result, max_tasks=args.max_tasks)
     else:
         output = render_markdown(result)
     if args.output:
