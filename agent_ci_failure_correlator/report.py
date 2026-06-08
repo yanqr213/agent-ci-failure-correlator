@@ -54,6 +54,55 @@ def render_markdown(result: AnalysisResult) -> str:
     return "\n".join(lines)
 
 
+def render_brief(result: AnalysisResult) -> str:
+    data = result.to_dict()
+    summary = data["summary"]
+    decision = _brief_decision(result)
+    lines: List[str] = [
+        "# CI Failure Triage Brief",
+        "",
+        f"Decision: {decision}",
+        (
+            "Scope: "
+            f"{summary['event_count']} failure events, "
+            f"{summary['cluster_count']} clusters, "
+            f"{summary['cross_repository_cluster_count']} cross-repository repeats."
+        ),
+        "",
+        "Top repeated causes:",
+    ]
+    top_clusters = sorted(result.clusters, key=_brief_cluster_rank, reverse=True)[:5]
+    if not top_clusters:
+        lines.append("- No CI failure clusters were detected.")
+    for cluster in top_clusters:
+        label = ", ".join(cluster.root_cause_labels) or "unknown"
+        repos = ", ".join(cluster.repositories[:4]) or "unknown repository"
+        if len(cluster.repositories) > 4:
+            repos += f", +{len(cluster.repositories) - 4} more"
+        repeat = "cross-repo" if cluster.is_cross_repository else "single-repo"
+        lines.append(
+            f"- {cluster.cluster_id} [{repeat}] {label}: "
+            f"{cluster.event_count} events across {cluster.repository_count} repositories "
+            f"({repos}), confidence {cluster.confidence:.2f}."
+        )
+        for action in cluster.suggested_actions[:2]:
+            lines.append(f"  Next: {action}")
+        links = [event.source.url for event in cluster.events if event.source.url]
+        if links:
+            lines.append(f"  Runs: {', '.join(links[:3])}")
+    lines.extend(["", "Agent handoff:"])
+    if result.has_cross_repository_repeats:
+        lines.append("- Fix cross-repository repeated clusters first; one shared dependency or runner change may clear multiple emails.")
+    elif result.has_failures:
+        lines.append("- Start with the highest-confidence cluster and verify whether the suggested action reproduces locally.")
+    else:
+        lines.append("- No failure action is required for the provided inputs.")
+    if result.warnings:
+        lines.append(f"- Review parser warnings before acting: {len(result.warnings)} warning(s).")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _cluster_one_liner(cluster: RootCauseCluster) -> str:
     labels = ", ".join(cluster.root_cause_labels)
     repos = ", ".join(cluster.repositories)
@@ -133,3 +182,20 @@ def _trim_block(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text.strip()
     return text[:limit].rstrip() + "\n..."
+
+
+def _brief_decision(result: AnalysisResult) -> str:
+    if result.has_cross_repository_repeats:
+        return "BATCH-FIX - repeated failures span repositories."
+    if result.has_failures:
+        return "INVESTIGATE - failures found but no cross-repository repeat was detected."
+    return "CLEAR - no failure events were detected."
+
+
+def _brief_cluster_rank(cluster: RootCauseCluster) -> tuple[int, int, float, int]:
+    return (
+        1 if cluster.is_cross_repository else 0,
+        cluster.repository_count,
+        cluster.confidence,
+        cluster.event_count,
+    )

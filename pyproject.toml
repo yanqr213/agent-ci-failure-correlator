@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-ci-failure-correlator"
-version = "0.2.0"
+version = "0.3.0"
 description = "Normalize and correlate recurring CI failures across repositories."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -31,6 +31,11 @@ dependencies = []
 
 [project.scripts]
 agent-ci-failure-correlator = "agent_ci_failure_correlator.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/yanqr213/agent-ci-failure-correlator"
+Repository = "https://github.com/yanqr213/agent-ci-failure-correlator"
+Issues = "https://github.com/yanqr213/agent-ci-failure-correlator/issues"
 
 [tool.setuptools.packages.find]
 include = ["agent_ci_failure_correlator*"]

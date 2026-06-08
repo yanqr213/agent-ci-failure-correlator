@@ -25,7 +25,7 @@ The complete English guide is available below in [English](#english).
 - 规则标签：识别 Python import、JavaScript dependency、测试断言、网络、超时、权限、lint、类型检查、构建、runner 环境、容器等根因。
 - 相似度聚类：结合标签相似度、token Jaccard、文本相似度、命令和语言信号。
 - 置信度与证据：输出共享 token、平均/最低 pair similarity、代表性摘要。
-- 报告：Markdown 给人读，JSON 给自动化和 agent 读。
+- 报告：brief 给快速分派，Markdown 给完整人工阅读，JSON 给自动化和 agent 读。
 - 退出码语义：可在 CI 中作为门禁使用。
 - 无外部运行依赖：优先 Python 标准库，兼容 Python 3.9+。
 
@@ -71,6 +71,14 @@ python -m agent_ci_failure_correlator analyze examples/inputs --output report.md
 python -m agent_ci_failure_correlator analyze examples/inputs --format json --output report.json
 ```
 
+输出适合直接发给维护者或 AI agent 的短摘要：
+
+```bash
+python -m agent_ci_failure_correlator analyze examples/inputs \
+  --format brief \
+  --output ci-failure-brief.md
+```
+
 使用配置并在发现跨仓库重复失败时返回退出码 `2`：
 
 ```bash
@@ -90,6 +98,7 @@ python -m agent_ci_failure_correlator init-config --output ci-failure-correlator
 
 - `--similarity-threshold 0.56`：调整聚类阈值，越低越容易合并。
 - `--min-cluster-size 2`：只报告至少 N 个事件的聚类。
+- `--format brief|markdown|json`：brief 适合先处理 CI 邮件批量分派，Markdown 适合完整阅读，JSON 适合自动化。
 - `--fail-on-cross-repo`：发现跨仓库重复失败时返回 `2`。
 - `--fail-on-any-failure`：发现任何失败时返回 `1`。
 - `--no-raw-events`：JSON 报告中不包含原始日志文本。
@@ -233,6 +242,22 @@ JSON 报告核心字段：
 }
 ```
 
+brief 报告会压缩成可直接粘贴的 triage 摘要：
+
+```markdown
+# CI Failure Triage Brief
+
+Decision: BATCH-FIX - repeated failures span repositories.
+Scope: 7 failure events, 4 clusters, 2 cross-repository repeats.
+
+Top repeated causes:
+- C001 [cross-repo] python-import: 3 events across 3 repositories (...), confidence 0.74.
+  Next: Check Python dependencies, package discovery, and shared environment setup.
+
+Agent handoff:
+- Fix cross-repository repeated clusters first; one shared dependency or runner change may clear multiple emails.
+```
+
 ## 退出码语义
 
 - `0`：分析完成，未触发门禁。
@@ -268,13 +293,13 @@ jobs:
         run: |
           python -m agent_ci_failure_correlator analyze exported-failures \
             --config ci-failure-correlator.json \
-            --format markdown \
-            --output ci-failure-report.md
+            --format brief \
+            --output ci-failure-brief.md
       - name: Upload report
         uses: actions/upload-artifact@v4
         with:
-          name: ci-failure-report
-          path: ci-failure-report.md
+          name: ci-failure-brief
+          path: ci-failure-brief.md
 ```
 
 ## 开发指南
@@ -323,6 +348,7 @@ This tool produces:
 - root-cause labels and confidence scores
 - cross-repository repeat detection
 - Markdown reports for humans and agents
+- brief triage reports for fast agent handoff
 - JSON reports for automation
 - CI-friendly exit codes
 
@@ -377,6 +403,14 @@ Generate JSON:
 python -m agent_ci_failure_correlator analyze examples/inputs --format json --output report.json
 ```
 
+Generate a compact triage brief:
+
+```bash
+python -m agent_ci_failure_correlator analyze examples/inputs \
+  --format brief \
+  --output ci-failure-brief.md
+```
+
 Use a config file and fail the command when repeated failures span repositories:
 
 ```bash
@@ -396,6 +430,7 @@ Useful flags:
 
 - `--similarity-threshold 0.56`: lower values merge more aggressively.
 - `--min-cluster-size 2`: report only clusters with at least N events.
+- `--format brief|markdown|json`: use brief for first-pass inbox triage and agent handoff.
 - `--fail-on-cross-repo`: exit `2` when a repeated failure spans repositories.
 - `--fail-on-any-failure`: exit `1` when any failure is found.
 - `--no-raw-events`: omit raw log bodies from JSON output.
@@ -529,13 +564,13 @@ jobs:
         run: |
           python -m agent_ci_failure_correlator analyze exported-failures \
             --config ci-failure-correlator.json \
-            --format markdown \
-            --output ci-failure-report.md
+            --format brief \
+            --output ci-failure-brief.md
       - name: Upload report
         uses: actions/upload-artifact@v4
         with:
-          name: ci-failure-report
-          path: ci-failure-report.md
+          name: ci-failure-brief
+          path: ci-failure-brief.md
 ```
 
 ### Development

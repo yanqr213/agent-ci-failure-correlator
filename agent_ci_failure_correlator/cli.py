@@ -12,7 +12,7 @@ from . import __version__
 from .api import analyze_paths
 from .config import CorrelatorConfig, load_config
 from .models import AnalysisResult
-from .report import render_json, render_markdown
+from .report import render_brief, render_json, render_markdown
 
 EXIT_SUCCESS = 0
 EXIT_FAILURES_FOUND = 1
@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("inputs", nargs="+", help="Input files or directories (.json, .jsonl, .xml, .log, .txt).")
     analyze.add_argument("-c", "--config", help="Path to JSON configuration file.")
     analyze.add_argument("-o", "--output", help="Output report path. Defaults to stdout.")
-    analyze.add_argument("--format", choices=["markdown", "json"], default="markdown", help="Report format.")
+    analyze.add_argument("--format", choices=["brief", "markdown", "json"], default="markdown", help="Report format.")
     analyze.add_argument("--similarity-threshold", type=float, help="Override similarity threshold.")
     analyze.add_argument("--min-cluster-size", type=int, help="Override minimum cluster size.")
     analyze.add_argument("--fail-on-cross-repo", action="store_true", help="Exit 2 when repeated failures span repositories.")
@@ -81,7 +81,12 @@ def _analyze(args: argparse.Namespace) -> int:
 
     if not result.config.get("include_raw_events", True):
         _drop_raw_events(result)
-    output = render_json(result) if args.format == "json" else render_markdown(result)
+    if args.format == "json":
+        output = render_json(result)
+    elif args.format == "brief":
+        output = render_brief(result)
+    else:
+        output = render_markdown(result)
     if args.output:
         output_path = Path(args.output)
         output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -12,7 +12,7 @@ from agent_ci_failure_correlator.cli import (
 )
 from agent_ci_failure_correlator.config import CorrelatorConfig
 from agent_ci_failure_correlator.models import FailureEvent, SourceRef
-from agent_ci_failure_correlator.report import render_json, render_markdown
+from agent_ci_failure_correlator.report import render_brief, render_json, render_markdown
 
 
 def make_event(event_id="e1", repo="org/a"):
@@ -61,6 +61,16 @@ class ReportApiCliTests(unittest.TestCase):
         self.assertIn("# CI Failure Correlation Report", markdown)
         self.assertIn("## Clusters", markdown)
 
+    def test_render_brief_prioritizes_cross_repo_repeats(self):
+        result = analyze([make_event("a", "org/a"), make_event("b", "org/b")], CorrelatorConfig(similarity_threshold=0.55))
+        brief = render_brief(result)
+
+        self.assertIn("# CI Failure Triage Brief", brief)
+        self.assertIn("Decision: BATCH-FIX", brief)
+        self.assertIn("Top repeated causes:", brief)
+        self.assertIn("python-import", brief)
+        self.assertIn("Agent handoff:", brief)
+
     def test_cli_version_subcommand(self):
         self.assertEqual(main(["version"]), EXIT_SUCCESS)
 
@@ -87,6 +97,19 @@ class ReportApiCliTests(unittest.TestCase):
             self.assertEqual(code, EXIT_SUCCESS)
             data = json.loads(output_path.read_text(encoding="utf-8"))
             self.assertEqual(data["summary"]["event_count"], 1)
+
+    def test_cli_analyze_writes_brief_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            a = Path(tmp) / "a.json"
+            b = Path(tmp) / "b.json"
+            output_path = Path(tmp) / "reports" / "brief.md"
+            a.write_text(json.dumps({"repository": "org/a", "log": "ModuleNotFoundError: No module named shared_auth"}), encoding="utf-8")
+            b.write_text(json.dumps({"repository": "org/b", "log": "ModuleNotFoundError: No module named shared_auth"}), encoding="utf-8")
+            code = main(["analyze", str(a), str(b), "--similarity-threshold", "0.55", "--format", "brief", "--output", str(output_path)])
+            self.assertEqual(code, EXIT_SUCCESS)
+            text = output_path.read_text(encoding="utf-8")
+            self.assertIn("Decision: BATCH-FIX", text)
+            self.assertIn("python-import", text)
 
     def test_cli_analyze_creates_output_parent_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
