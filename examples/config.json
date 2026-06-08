@@ -1,0 +1,60 @@
+{
+  "similarity_threshold": 0.56,
+  "min_cluster_size": 1,
+  "max_summary_lines": 8,
+  "max_summary_chars": 4000,
+  "context_lines": 2,
+  "fail_on_cross_repo": true,
+  "fail_on_any_failure": false,
+  "include_raw_events": false,
+  "repository_aliases": {
+    "api-service": "org/api-service",
+    "org/api": "org/api-service"
+  },
+  "ignore_patterns": [
+    "^\\s*$",
+    "^Run\\s+",
+    "^shell:\\s+",
+    "^env:\\s+",
+    "^##\\[group\\]",
+    "^##\\[endgroup\\]",
+    "^\\[command\\]"
+  ],
+  "stop_words": [
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "ci",
+    "for",
+    "from",
+    "in",
+    "is",
+    "it",
+    "job",
+    "log",
+    "of",
+    "on",
+    "or",
+    "run",
+    "step",
+    "the",
+    "to",
+    "with"
+  ],
+  "custom_root_causes": {
+    "shared-fixture-breakage": [
+      "golden fixture .* missing",
+      "snapshot .* obsolete"
+    ]
+  },
+  "label_actions": {
+    "shared-fixture-breakage": [
+      "Regenerate shared fixtures and verify generated artifacts across all repositories before merging."
+    ]
+  }
+}

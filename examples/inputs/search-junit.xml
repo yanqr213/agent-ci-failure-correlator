@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="search" tests="2" failures="1" repository="org/search-service" workflow="CI">
+  <testcase classname="tests.test_index" name="test_refresh_index">
+    <failure message="AssertionError: expected refreshed index">
+Traceback (most recent call last):
+  File "/home/runner/work/search-service/tests/test_index.py", line 31, in test_refresh_index
+    assert status == "ready"
+AssertionError: expected refreshed index
+    </failure>
+  </testcase>
+  <testcase classname="tests.test_index" name="test_delete_index"/>
+</testsuite>

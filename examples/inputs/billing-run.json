@@ -1,0 +1,21 @@
+{
+  "repository": "org/billing-service",
+  "workflow": "CI",
+  "run_id": "2042",
+  "conclusion": "failure",
+  "jobs": [
+    {
+      "name": "unit-tests",
+      "conclusion": "failure",
+      "steps": [
+        {
+          "name": "pytest",
+          "conclusion": "failure",
+          "command": "python -m pytest",
+          "exit_code": 1,
+          "log": "Run python -m pytest\n============================= test session starts =============================\ncollected 96 items\n\nbilling/test_invoice_auth.py::test_invoice_scope FAILED\n\nTraceback (most recent call last):\n  File \"/home/runner/work/billing-service/billing/test_invoice_auth.py\", line 11, in <module>\n    from shared_auth.client import AuthClient\nModuleNotFoundError: No module named 'shared_auth'\n\nERROR billing/test_invoice_auth.py - ModuleNotFoundError: No module named 'shared_auth'"
+        }
+      ]
+    }
+  ]
+}

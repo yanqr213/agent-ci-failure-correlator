@@ -1,0 +1,22 @@
+{
+  "repository": "org/api-service",
+  "workflow": "CI",
+  "run_id": "1001",
+  "conclusion": "failure",
+  "created_at": "2026-06-07T12:00:00Z",
+  "jobs": [
+    {
+      "name": "test-python",
+      "conclusion": "failure",
+      "steps": [
+        {
+          "name": "pytest",
+          "conclusion": "failure",
+          "command": "python -m pytest",
+          "exit_code": 1,
+          "log": "============================= test session starts =============================\nplatform linux -- Python 3.12.3\ncollected 128 items\n\nservices/test_handlers.py::test_create_user FAILED\n\nTraceback (most recent call last):\n  File \"/home/runner/work/api-service/services/test_handlers.py\", line 8, in <module>\n    from shared_auth.client import AuthClient\nModuleNotFoundError: No module named 'shared_auth'\n\nFAILED services/test_handlers.py::test_create_user - ModuleNotFoundError: No module named 'shared_auth'"
+        }
+      ]
+    }
+  ]
+}

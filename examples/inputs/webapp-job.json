@@ -1,0 +1,16 @@
+{
+  "repository": "org/webapp",
+  "workflow": "CI",
+  "run_id": "3007",
+  "job_name": "frontend",
+  "conclusion": "failure",
+  "steps": [
+    {
+      "name": "npm test",
+      "conclusion": "failure",
+      "command": "npm test",
+      "exit_code": 1,
+      "log": "npm ERR! code MODULE_NOT_FOUND\nError: Cannot find module '@org/ui-theme'\nRequire stack:\n- /home/runner/work/webapp/src/theme.ts\n- /home/runner/work/webapp/src/App.test.tsx\n\nFAIL src/App.test.tsx\nTest suite failed to run\nCannot find module '@org/ui-theme' from 'src/theme.ts'"
+    }
+  ]
+}
