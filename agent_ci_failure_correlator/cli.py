@@ -12,7 +12,7 @@ from . import __version__
 from .api import analyze_paths
 from .config import CorrelatorConfig, load_config
 from .models import AnalysisResult
-from .report import render_brief, render_json, render_markdown
+from .report import render_brief, render_json, render_markdown, render_sarif
 
 EXIT_SUCCESS = 0
 EXIT_FAILURES_FOUND = 1
@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("inputs", nargs="+", help="Input files or directories (.json, .jsonl, .xml, .log, .txt).")
     analyze.add_argument("-c", "--config", help="Path to JSON configuration file.")
     analyze.add_argument("-o", "--output", help="Output report path. Defaults to stdout.")
-    analyze.add_argument("--format", choices=["brief", "markdown", "json"], default="markdown", help="Report format.")
+    analyze.add_argument("--format", choices=["brief", "markdown", "json", "sarif"], default="markdown", help="Report format.")
     analyze.add_argument("--similarity-threshold", type=float, help="Override similarity threshold.")
     analyze.add_argument("--min-cluster-size", type=int, help="Override minimum cluster size.")
     analyze.add_argument("--fail-on-cross-repo", action="store_true", help="Exit 2 when repeated failures span repositories.")
@@ -83,6 +83,8 @@ def _analyze(args: argparse.Namespace) -> int:
         _drop_raw_events(result)
     if args.format == "json":
         output = render_json(result)
+    elif args.format == "sarif":
+        output = render_sarif(result)
     elif args.format == "brief":
         output = render_brief(result)
     else:

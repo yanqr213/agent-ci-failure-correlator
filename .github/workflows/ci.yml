@@ -37,3 +37,5 @@ jobs:
           python -m agent_ci_failure_correlator analyze examples/inputs --format json --output report.json
           python -m agent_ci_failure_correlator analyze examples/inputs --format brief --output report-brief.md
           python -m agent_ci_failure_correlator analyze examples/inputs --format markdown --output report.md
+          python -m agent_ci_failure_correlator analyze examples/inputs --format sarif --output report.sarif
+          python -m json.tool report.sarif > /dev/null

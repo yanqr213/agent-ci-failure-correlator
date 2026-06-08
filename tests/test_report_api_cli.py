@@ -12,7 +12,7 @@ from agent_ci_failure_correlator.cli import (
 )
 from agent_ci_failure_correlator.config import CorrelatorConfig
 from agent_ci_failure_correlator.models import FailureEvent, SourceRef
-from agent_ci_failure_correlator.report import render_brief, render_json, render_markdown
+from agent_ci_failure_correlator.report import render_brief, render_json, render_markdown, render_sarif
 
 
 def make_event(event_id="e1", repo="org/a"):
@@ -71,6 +71,17 @@ class ReportApiCliTests(unittest.TestCase):
         self.assertIn("python-import", brief)
         self.assertIn("Agent handoff:", brief)
 
+    def test_render_sarif_contains_cluster_result(self):
+        result = analyze([make_event("a", "org/a"), make_event("b", "org/b")], CorrelatorConfig(similarity_threshold=0.55))
+        data = json.loads(render_sarif(result))
+        run = data["runs"][0]
+
+        self.assertEqual(data["version"], "2.1.0")
+        self.assertEqual(run["tool"]["driver"]["name"], "agent-ci-failure-correlator")
+        self.assertEqual(run["results"][0]["ruleId"], "ci-failure.python-import")
+        self.assertEqual(run["results"][0]["level"], "error")
+        self.assertTrue(run["results"][0]["properties"]["is_cross_repository"])
+
     def test_cli_version_subcommand(self):
         self.assertEqual(main(["version"]), EXIT_SUCCESS)
 
@@ -110,6 +121,18 @@ class ReportApiCliTests(unittest.TestCase):
             text = output_path.read_text(encoding="utf-8")
             self.assertIn("Decision: BATCH-FIX", text)
             self.assertIn("python-import", text)
+
+    def test_cli_analyze_writes_sarif_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            a = Path(tmp) / "a.json"
+            b = Path(tmp) / "b.json"
+            output_path = Path(tmp) / "reports" / "report.sarif"
+            a.write_text(json.dumps({"repository": "org/a", "log": "ModuleNotFoundError: No module named shared_auth"}), encoding="utf-8")
+            b.write_text(json.dumps({"repository": "org/b", "log": "ModuleNotFoundError: No module named shared_auth"}), encoding="utf-8")
+            code = main(["analyze", str(a), str(b), "--similarity-threshold", "0.55", "--format", "sarif", "--output", str(output_path)])
+            self.assertEqual(code, EXIT_SUCCESS)
+            data = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(data["runs"][0]["tool"]["driver"]["name"], "agent-ci-failure-correlator")
 
     def test_cli_analyze_creates_output_parent_directory(self):
         with tempfile.TemporaryDirectory() as tmp:

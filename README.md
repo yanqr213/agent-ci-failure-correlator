@@ -1,6 +1,6 @@
 # agent-ci-failure-correlator
 
-面向 Codex、Claude Code、GitHub Actions 高频用户的 AI/DevOps 辅助工具。它把多仓库 CI 失败导出、workflow run JSON、job log 片段、pytest/npm 错误摘要、JUnit XML 等输入归一化，聚类根因，标记“同一类失败正在多个项目重复发生”，并输出可执行的 Markdown/JSON 报告。
+面向 Codex、Claude Code、GitHub Actions 高频用户的 AI/DevOps 辅助工具。它把多仓库 CI 失败导出、workflow run JSON、job log 片段、pytest/npm 错误摘要、JUnit XML 等输入归一化，聚类根因，标记“同一类失败正在多个项目重复发生”，并输出可执行的 Markdown/JSON/SARIF 报告。
 
 The complete English guide is available below in [English](#english).
 
@@ -14,7 +14,7 @@ The complete English guide is available below in [English](#english).
 - 根因标签与置信度
 - 跨仓库重复失败聚类
 - 可直接发给维护者或 agent 的 Markdown 报告
-- 可接入自动化的 JSON 报告和退出码
+- 可接入自动化与 GitHub Code Scanning 的 JSON/SARIF 报告和退出码
 
 ## 功能
 
@@ -25,7 +25,7 @@ The complete English guide is available below in [English](#english).
 - 规则标签：识别 Python import、JavaScript dependency、测试断言、网络、超时、权限、lint、类型检查、构建、runner 环境、容器等根因。
 - 相似度聚类：结合标签相似度、token Jaccard、文本相似度、命令和语言信号。
 - 置信度与证据：输出共享 token、平均/最低 pair similarity、代表性摘要。
-- 报告：brief 给快速分派，Markdown 给完整人工阅读，JSON 给自动化和 agent 读。
+- 报告：brief 给快速分派，Markdown 给完整人工阅读，JSON 给自动化和 agent 读，SARIF 给 GitHub Code Scanning。
 - 退出码语义：可在 CI 中作为门禁使用。
 - 无外部运行依赖：优先 Python 标准库，兼容 Python 3.9+。
 
@@ -79,6 +79,14 @@ python -m agent_ci_failure_correlator analyze examples/inputs \
   --output ci-failure-brief.md
 ```
 
+输出 SARIF，方便上传到 GitHub Code Scanning：
+
+```bash
+python -m agent_ci_failure_correlator analyze examples/inputs \
+  --format sarif \
+  --output ci-failure-clusters.sarif
+```
+
 使用配置并在发现跨仓库重复失败时返回退出码 `2`：
 
 ```bash
@@ -98,7 +106,7 @@ python -m agent_ci_failure_correlator init-config --output ci-failure-correlator
 
 - `--similarity-threshold 0.56`：调整聚类阈值，越低越容易合并。
 - `--min-cluster-size 2`：只报告至少 N 个事件的聚类。
-- `--format brief|markdown|json`：brief 适合先处理 CI 邮件批量分派，Markdown 适合完整阅读，JSON 适合自动化。
+- `--format brief|markdown|json|sarif`：brief 适合先处理 CI 邮件批量分派，Markdown 适合完整阅读，JSON 适合自动化，SARIF 适合 Code Scanning。
 - `--fail-on-cross-repo`：发现跨仓库重复失败时返回 `2`。
 - `--fail-on-any-failure`：发现任何失败时返回 `1`。
 - `--no-raw-events`：JSON 报告中不包含原始日志文本。
@@ -242,6 +250,8 @@ JSON 报告核心字段：
 }
 ```
 
+SARIF 报告会把每个根因聚类输出为一个 result，并在 properties 中保留事件数、仓库列表、置信度、建议动作和 run 链接，适合在 GitHub Code Scanning 中集中查看跨仓库重复失败。
+
 brief 报告会压缩成可直接粘贴的 triage 摘要：
 
 ```markdown
@@ -302,6 +312,29 @@ jobs:
           path: ci-failure-brief.md
 ```
 
+如果要把聚类结果上传到 GitHub Code Scanning：
+
+```yaml
+permissions:
+  contents: read
+  security-events: write
+
+steps:
+  - uses: actions/checkout@v4
+  - uses: actions/setup-python@v5
+    with:
+      python-version: "3.12"
+  - run: python -m pip install git+https://github.com/yanqr213/agent-ci-failure-correlator.git
+  - run: |
+      python -m agent_ci_failure_correlator analyze exported-failures \
+        --format sarif \
+        --output ci-failure-clusters.sarif
+  - uses: github/codeql-action/upload-sarif@v3
+    if: always()
+    with:
+      sarif_file: ci-failure-clusters.sarif
+```
+
 ## 开发指南
 
 运行测试：
@@ -323,7 +356,7 @@ python -m agent_ci_failure_correlator analyze examples/inputs --format json --ou
 - `agent_ci_failure_correlator/normalizer.py`：日志摘要、归一化、token 化。
 - `agent_ci_failure_correlator/rules.py`：根因规则与修复建议。
 - `agent_ci_failure_correlator/clusterer.py`：相似度聚类与置信度。
-- `agent_ci_failure_correlator/report.py`：Markdown/JSON 报告。
+- `agent_ci_failure_correlator/report.py`：Markdown/JSON/SARIF 报告。
 - `agent_ci_failure_correlator/cli.py`：命令行入口与退出码。
 - `tests/`：单元测试。
 - `examples/`：配置和示例输入。
@@ -336,7 +369,7 @@ python -m agent_ci_failure_correlator analyze examples/inputs --format json --ou
 
 ## English
 
-`agent-ci-failure-correlator` is an AI/DevOps helper for developers who frequently work with Codex, Claude Code, and GitHub Actions. It normalizes CI failure exports, workflow run JSON, job log fragments, pytest/npm summaries, and JUnit XML files, then clusters likely shared root causes across repositories.
+`agent-ci-failure-correlator` is an AI/DevOps helper for developers who frequently work with Codex, Claude Code, and GitHub Actions. It normalizes CI failure exports, workflow run JSON, job log fragments, pytest/npm summaries, and JUnit XML files, then clusters likely shared root causes across repositories and emits Markdown, JSON, brief, and SARIF reports.
 
 ### Problem
 
@@ -350,6 +383,7 @@ This tool produces:
 - Markdown reports for humans and agents
 - brief triage reports for fast agent handoff
 - JSON reports for automation
+- SARIF reports for GitHub Code Scanning
 - CI-friendly exit codes
 
 ### Features
@@ -411,6 +445,14 @@ python -m agent_ci_failure_correlator analyze examples/inputs \
   --output ci-failure-brief.md
 ```
 
+Generate SARIF for GitHub Code Scanning:
+
+```bash
+python -m agent_ci_failure_correlator analyze examples/inputs \
+  --format sarif \
+  --output ci-failure-clusters.sarif
+```
+
 Use a config file and fail the command when repeated failures span repositories:
 
 ```bash
@@ -430,7 +472,7 @@ Useful flags:
 
 - `--similarity-threshold 0.56`: lower values merge more aggressively.
 - `--min-cluster-size 2`: report only clusters with at least N events.
-- `--format brief|markdown|json`: use brief for first-pass inbox triage and agent handoff.
+- `--format brief|markdown|json|sarif`: use brief for first-pass inbox triage, JSON for automation, and SARIF for Code Scanning.
 - `--fail-on-cross-repo`: exit `2` when a repeated failure spans repositories.
 - `--fail-on-any-failure`: exit `1` when any failure is found.
 - `--no-raw-events`: omit raw log bodies from JSON output.
@@ -571,6 +613,16 @@ jobs:
         with:
           name: ci-failure-brief
           path: ci-failure-brief.md
+```
+
+Upload SARIF in GitHub Actions:
+
+```yaml
+- run: python -m agent_ci_failure_correlator analyze exported-failures --format sarif --output ci-failure-clusters.sarif
+- uses: github/codeql-action/upload-sarif@v3
+  if: always()
+  with:
+    sarif_file: ci-failure-clusters.sarif
 ```
 
 ### Development

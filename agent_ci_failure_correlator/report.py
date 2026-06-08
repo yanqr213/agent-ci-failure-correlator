@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
-from typing import List
+from typing import Any, Dict, List, Optional
 
+from . import __version__
 from .models import AnalysisResult, FailureEvent, RootCauseCluster
 
 
@@ -101,6 +103,34 @@ def render_brief(result: AnalysisResult) -> str:
         lines.append(f"- Review parser warnings before acting: {len(result.warnings)} warning(s).")
     lines.append("")
     return "\n".join(lines)
+
+
+def render_sarif(result: AnalysisResult) -> str:
+    rules = _sarif_rules(result.clusters)
+    sarif = {
+        "version": "2.1.0",
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "agent-ci-failure-correlator",
+                        "semanticVersion": __version__,
+                        "informationUri": "https://github.com/yanqr213/agent-ci-failure-correlator",
+                        "rules": rules,
+                    }
+                },
+                "automationDetails": {"id": "ci-failure-correlation"},
+                "results": [_cluster_to_sarif(cluster) for cluster in result.clusters],
+                "properties": {
+                    "summary": result.to_dict()["summary"],
+                    "inputs": result.inputs,
+                    "warnings": result.warnings,
+                },
+            }
+        ],
+    }
+    return json.dumps(sarif, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
 def _cluster_one_liner(cluster: RootCauseCluster) -> str:
@@ -199,3 +229,113 @@ def _brief_cluster_rank(cluster: RootCauseCluster) -> tuple[int, int, float, int
         cluster.confidence,
         cluster.event_count,
     )
+
+
+def _sarif_rules(clusters: List[RootCauseCluster]) -> List[Dict[str, Any]]:
+    labels = sorted({label for cluster in clusters for label in cluster.root_cause_labels})
+    return [
+        {
+            "id": _sarif_rule_id(label),
+            "name": label.replace("-", " ").title(),
+            "shortDescription": {"text": f"CI failures clustered as {label}."},
+            "fullDescription": {"text": _sarif_help(label)},
+            "defaultConfiguration": {"level": "warning"},
+            "help": {"text": _sarif_help(label), "markdown": _sarif_help(label)},
+            "properties": {
+                "precision": "medium",
+                "tags": ["ci", "github-actions", "agent-handoff", "failure-correlation", label],
+            },
+        }
+        for label in labels
+    ]
+
+
+def _cluster_to_sarif(cluster: RootCauseCluster) -> Dict[str, Any]:
+    representative = cluster.events[0] if cluster.events else None
+    label = cluster.root_cause_labels[0] if cluster.root_cause_labels else "unknown"
+    message = (
+        f"{cluster.cluster_id} {label}: {cluster.event_count} event(s) across "
+        f"{cluster.repository_count} repository/repositories; confidence {cluster.confidence:.2f}. "
+        f"{cluster.representative_summary}"
+    )
+    result = {
+        "ruleId": _sarif_rule_id(label),
+        "level": _sarif_level(cluster),
+        "message": {"text": _trim_inline(message, 800)},
+        "locations": [_sarif_location(cluster, representative)],
+        "partialFingerprints": {
+            "agentCiFailureCorrelator/v1": hashlib.sha256(cluster.normalized_signature.encode("utf-8")).hexdigest()[:32]
+        },
+        "properties": {
+            "cluster_id": cluster.cluster_id,
+            "confidence": cluster.confidence,
+            "event_count": cluster.event_count,
+            "repositories": cluster.repositories,
+            "root_cause_labels": cluster.root_cause_labels,
+            "suggested_actions": cluster.suggested_actions,
+            "is_cross_repository": cluster.is_cross_repository,
+            "events": [_event_reference(event) for event in cluster.events],
+            "similarity_evidence": cluster.similarity_evidence,
+        },
+    }
+    return result
+
+
+def _sarif_location(cluster: RootCauseCluster, representative: Optional[FailureEvent]) -> Dict[str, Any]:
+    uri = representative.source.path if representative else "ci-failure-input"
+    logical_name = cluster.cluster_id
+    if representative:
+        bits = [representative.source.repository, representative.source.workflow, representative.source.job_name]
+        logical_name = " / ".join(bit for bit in bits if bit) or cluster.cluster_id
+    return {
+        "physicalLocation": {
+            "artifactLocation": {"uri": (uri or "ci-failure-input").replace("\\", "/")},
+            "region": {"startLine": 1},
+        },
+        "logicalLocations": [
+            {
+                "name": logical_name,
+                "fullyQualifiedName": f"{cluster.cluster_id}.{cluster.normalized_signature}",
+                "kind": "function",
+            }
+        ],
+    }
+
+
+def _event_reference(event: FailureEvent) -> Dict[str, Any]:
+    return {
+        "event_id": event.event_id,
+        "repository": event.source.repository,
+        "workflow": event.source.workflow,
+        "job_name": event.source.job_name,
+        "run_id": event.source.run_id,
+        "url": event.source.url,
+        "source_path": event.source.path,
+        "summary": event.summary,
+    }
+
+
+def _sarif_rule_id(label: str) -> str:
+    return f"ci-failure.{label or 'unknown'}"
+
+
+def _sarif_level(cluster: RootCauseCluster) -> str:
+    if cluster.is_cross_repository or cluster.severity in {"critical", "error"}:
+        return "error"
+    if cluster.severity == "warning":
+        return "warning"
+    return "note"
+
+
+def _sarif_help(label: str) -> str:
+    return (
+        f"Failures with the `{label}` root-cause label were clustered together. "
+        "Review the representative summary, shared tokens, affected repositories, and suggested actions before assigning repair work to an agent."
+    )
+
+
+def _trim_inline(text: str, limit: int) -> str:
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[:limit].rstrip() + "..."
