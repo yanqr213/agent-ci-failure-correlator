@@ -83,7 +83,9 @@ def _analyze(args: argparse.Namespace) -> int:
         _drop_raw_events(result)
     output = render_json(result) if args.format == "json" else render_markdown(result)
     if args.output:
-        Path(args.output).write_text(output, encoding="utf-8")
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(output, encoding="utf-8")
     else:
         print(output, end="")
     return _exit_code(result)

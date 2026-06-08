@@ -19,6 +19,55 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertIn("python-import", events[0].root_cause_labels)
 
+    def test_parse_github_actions_email(self):
+        email_text = """From: GitHub Actions <notifications@github.com>
+Subject: [org/api-service] Run failed: CI - main (abc1234)
+Date: Mon, 08 Jun 2026 09:12:31 +0000
+Content-Type: text/plain; charset=utf-8
+
+Workflow: CI
+Job: pytest
+Branch: main
+Commit: abc1234
+
+Run URL: https://github.com/org/api-service/actions/runs/123456789
+
+Traceback (most recent call last):
+  File "/home/runner/work/api/tests/test_app.py", line 2, in <module>
+    import shared_auth
+ModuleNotFoundError: No module named 'shared_auth'
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "failure.eml"
+            path.write_text(email_text, encoding="utf-8")
+            events = parse_file(path, self.config)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].source.format, "github-actions-email")
+        self.assertEqual(events[0].source.repository, "org/api-service")
+        self.assertEqual(events[0].source.workflow, "CI")
+        self.assertEqual(events[0].source.run_id, "123456789")
+        self.assertEqual(events[0].source.job_name, "pytest")
+        self.assertEqual(events[0].metadata["branch"], "main")
+        self.assertNotIn("Run failed", events[0].summary)
+        self.assertIn("ModuleNotFoundError", events[0].summary)
+        self.assertIn("python-import", events[0].root_cause_labels)
+
+    def test_parse_github_actions_notification_txt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "notification.txt"
+            path.write_text(
+                "Subject: [org/web] Run failed: CI - main\n"
+                "Run URL: https://github.com/org/web/actions/runs/77\n"
+                "Job: build\n"
+                "Error: Cannot find module '@org/ui-theme'\n",
+                encoding="utf-8",
+            )
+            events = parse_file(path, self.config)
+        self.assertEqual(events[0].source.format, "github-actions-email")
+        self.assertEqual(events[0].source.repository, "org/web")
+        self.assertEqual(events[0].source.run_id, "77")
+        self.assertIn("javascript-dependency", events[0].root_cause_labels)
+
     def test_parse_job_json_failed_step(self):
         data = {
             "repository": "org/a",

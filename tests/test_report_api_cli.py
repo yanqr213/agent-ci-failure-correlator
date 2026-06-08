@@ -45,8 +45,10 @@ class ReportApiCliTests(unittest.TestCase):
     def test_analyze_paths_examples(self):
         root = Path(__file__).resolve().parents[1]
         result = analyze_paths([str(root / "examples" / "inputs")], config=CorrelatorConfig(similarity_threshold=0.56))
-        self.assertGreaterEqual(len(result.events), 6)
+        self.assertGreaterEqual(len(result.events), 7)
         self.assertTrue(result.has_cross_repository_repeats)
+        python_clusters = [cluster for cluster in result.clusters if "python-import" in cluster.root_cause_labels]
+        self.assertTrue(any("acme/checkout-service" in cluster.repositories for cluster in python_clusters))
 
     def test_render_json_is_valid_json(self):
         result = analyze([make_event()], CorrelatorConfig.default())
@@ -85,6 +87,16 @@ class ReportApiCliTests(unittest.TestCase):
             self.assertEqual(code, EXIT_SUCCESS)
             data = json.loads(output_path.read_text(encoding="utf-8"))
             self.assertEqual(data["summary"]["event_count"], 1)
+
+    def test_cli_analyze_creates_output_parent_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_path = root / "failure.log"
+            output_path = root / "nested" / "reports" / "report.json"
+            input_path.write_text("ModuleNotFoundError: No module named shared_auth", encoding="utf-8")
+            code = main(["analyze", str(input_path), "--format", "json", "--output", str(output_path)])
+            self.assertEqual(code, EXIT_SUCCESS)
+            self.assertTrue(output_path.exists())
 
     def test_cli_analyze_cross_repo_exit_code(self):
         with tempfile.TemporaryDirectory() as tmp:

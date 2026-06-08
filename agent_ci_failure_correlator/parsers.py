@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from email import policy
+from email.parser import BytesParser
 import json
 import re
 import xml.etree.ElementTree as ET
@@ -14,9 +16,21 @@ from .normalizer import canonical_repository, stable_event_id, summarize_and_nor
 from .rules import detect_root_causes, infer_language, severity_from_labels
 
 
-TEXT_EXTENSIONS = {".log", ".txt", ".out", ".err", ".md"}
+TEXT_EXTENSIONS = {".log", ".txt", ".out", ".err", ".md", ".eml"}
 JSON_EXTENSIONS = {".json", ".jsonl", ".ndjson"}
 XML_EXTENSIONS = {".xml"}
+
+GITHUB_ACTIONS_RUN_URL_RE = re.compile(
+    r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/actions/runs/(\d+)(?:/\S*)?",
+    re.IGNORECASE,
+)
+GITHUB_SUBJECT_REPO_RE = re.compile(r"\[([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\]")
+GITHUB_RUN_SUBJECT_RE = re.compile(r"\brun\s+(failed|cancelled|canceled|timed out|errored|error):\s*([^\r\n([]+)", re.IGNORECASE)
+FIELD_RE_TEMPLATE = r"(?:^|\n)\s*{field}\s*[:：]\s*([^\r\n]+)"
+GITHUB_NOTIFICATION_METADATA_RE = re.compile(
+    r"^\s*(subject|from|to|cc|date|workflow|job|failed job|branch|ref|commit|sha|run url|failing step)\s*[:：]",
+    re.IGNORECASE,
+)
 
 
 def discover_input_files(paths: Sequence[str]) -> List[Path]:
@@ -52,7 +66,9 @@ def parse_file(path: Path, config: CorrelatorConfig) -> List[FailureEvent]:
         return _parse_json_file(path, config)
     if suffix in XML_EXTENSIONS:
         return _parse_junit_xml(path, config)
-    return [_event_from_text(path.read_text(encoding="utf-8", errors="replace"), path, config, SourceRef(path=str(path), format="log"))]
+    if suffix == ".eml":
+        return [_parse_email(path, config)]
+    return [_event_from_plain_text_file(path, config)]
 
 
 def events_from_records(records: Iterable[Mapping[str, Any]], config: CorrelatorConfig, *, path: str = "<memory>") -> List[FailureEvent]:
@@ -116,6 +132,31 @@ def _parse_junit_xml(path: Path, config: CorrelatorConfig) -> List[FailureEvent]
             )
             events.append(_event_from_text(text, path, config, source, metadata={"testcase": name, "classname": classname}))
     return events
+
+
+def _parse_email(path: Path, config: CorrelatorConfig) -> FailureEvent:
+    message = BytesParser(policy=policy.default).parsebytes(path.read_bytes())
+    subject = str(message.get("subject") or "")
+    sender = str(message.get("from") or "")
+    timestamp = str(message.get("date") or "")
+    body = _message_text(message)
+    text = "\n".join(part for part in [f"Subject: {subject}" if subject else "", body] if part)
+    source, metadata = _github_actions_email_source(text, path)
+    metadata.update(
+        {
+            "subject": subject,
+            "sender": sender,
+        }
+    )
+    analysis_text = _strip_github_notification_metadata(text) if source.format == "github-actions-email" else text
+    return _event_from_text(analysis_text, path, config, source, timestamp=timestamp, metadata={key: value for key, value in metadata.items() if value})
+
+
+def _event_from_plain_text_file(path: Path, config: CorrelatorConfig) -> FailureEvent:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    source, metadata = _github_actions_email_source(text, path)
+    analysis_text = _strip_github_notification_metadata(text) if source.format == "github-actions-email" else text
+    return _event_from_text(analysis_text, path, config, source, metadata=metadata)
 
 
 def _events_from_mapping(data: Mapping[str, Any], path: Path, config: CorrelatorConfig, *, fallback_index: int) -> List[FailureEvent]:
@@ -383,6 +424,116 @@ def _metadata(data: Mapping[str, Any], exclude: Optional[set[str]] = None) -> Di
         if isinstance(value, (str, int, float, bool)) or value is None:
             result[str(key)] = value
     return result
+
+
+def _message_text(message: Any) -> str:
+    if message.is_multipart():
+        plain_parts: List[str] = []
+        fallback_parts: List[str] = []
+        for part in message.walk():
+            if part.is_multipart():
+                continue
+            content_type = part.get_content_type()
+            try:
+                content = part.get_content()
+            except LookupError:
+                payload = part.get_payload(decode=True) or b""
+                content = payload.decode("utf-8", errors="replace")
+            if not isinstance(content, str):
+                content = str(content)
+            if content_type == "text/plain":
+                plain_parts.append(content)
+            elif content_type == "text/html":
+                fallback_parts.append(_html_to_text(content))
+        return "\n".join(plain_parts or fallback_parts).strip()
+    try:
+        content = message.get_content()
+    except LookupError:
+        payload = message.get_payload(decode=True) or b""
+        content = payload.decode("utf-8", errors="replace")
+    if not isinstance(content, str):
+        content = str(content)
+    if message.get_content_type() == "text/html":
+        return _html_to_text(content)
+    return content.strip()
+
+
+def _html_to_text(value: str) -> str:
+    text = re.sub(r"(?is)<(script|style).*?</\1>", " ", value)
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</p\s*>", "\n", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = text.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+    return re.sub(r"\n{3,}", "\n\n", re.sub(r"[ \t]+", " ", text)).strip()
+
+
+def _github_actions_email_source(text: str, path: Path) -> Tuple[SourceRef, Dict[str, str]]:
+    metadata: Dict[str, str] = {}
+    subject = _email_field(text, "Subject")
+    run_url_match = GITHUB_ACTIONS_RUN_URL_RE.search(text)
+    repository = ""
+    run_id = ""
+    url = ""
+    if run_url_match:
+        owner, repo, run_id = run_url_match.groups()
+        repository = f"{owner}/{repo}"
+        url = run_url_match.group(0).rstrip(").,>")
+    if not repository:
+        subject_match = GITHUB_SUBJECT_REPO_RE.search(subject)
+        if subject_match:
+            repository = subject_match.group(1)
+    workflow = _email_field(text, "Workflow") or _workflow_from_subject(subject)
+    job_name = _email_field(text, "Job") or _email_field(text, "Failed job")
+    branch = _email_field(text, "Branch") or _email_field(text, "Ref")
+    commit = _email_field(text, "Commit") or _email_field(text, "SHA")
+    if branch:
+        metadata["branch"] = branch
+    if commit:
+        metadata["commit"] = commit
+    if subject:
+        metadata["notification_subject"] = subject
+    source_format = "github-actions-email" if repository or run_url_match or "github actions" in text.lower() else "log"
+    return (
+        SourceRef(
+            path=str(path),
+            format=source_format,
+            repository=repository or _guess_repo_from_path(path),
+            workflow=workflow,
+            run_id=run_id,
+            job_name=job_name,
+            url=url,
+        ),
+        metadata,
+    )
+
+
+def _strip_github_notification_metadata(text: str) -> str:
+    lines: List[str] = []
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").splitlines():
+        if GITHUB_NOTIFICATION_METADATA_RE.search(line):
+            continue
+        if GITHUB_ACTIONS_RUN_URL_RE.search(line):
+            continue
+        if line.strip().lower() in {"the workflow run failed.", "the workflow has failed."}:
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip() or text
+
+
+def _email_field(text: str, field: str) -> str:
+    pattern = re.compile(FIELD_RE_TEMPLATE.format(field=re.escape(field)), re.IGNORECASE)
+    match = pattern.search(text)
+    if not match:
+        return ""
+    return match.group(1).strip().strip("<>")
+
+
+def _workflow_from_subject(subject: str) -> str:
+    match = GITHUB_RUN_SUBJECT_RE.search(subject)
+    if not match:
+        return ""
+    workflow = match.group(2).strip()
+    return workflow.rstrip(" .")
 
 
 def _int_or_none(value: Any) -> Optional[int]:

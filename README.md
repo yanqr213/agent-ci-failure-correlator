@@ -19,6 +19,7 @@ The complete English guide is available below in [English](#english).
 ## 功能
 
 - 支持输入：GitHub workflow run JSON、job JSON、JSONL/NDJSON、纯日志、JUnit XML、工具自身导出的 JSON。
+- 支持 GitHub Actions 失败通知邮件：`.eml` 原文或转存 `.txt` 都会提取仓库、workflow、job、branch、run id 和 run URL。
 - 日志摘要：提取错误、失败、Traceback、timeout、npm/pytest 等关键行，并保留上下文。
 - 噪声归一化：隐藏路径、URL、时间戳、长哈希、版本号、持续时间和大数字。
 - 规则标签：识别 Python import、JavaScript dependency、测试断言、网络、超时、权限、lint、类型检查、构建、runner 环境、容器等根因。
@@ -49,6 +50,14 @@ agent-ci-failure-correlator --help
 ```
 
 ## CLI 用法
+
+把多封 GitHub Actions 失败邮件或日志放进一个目录后直接分析：
+
+```bash
+python -m agent_ci_failure_correlator analyze exported-failure-mails \
+  --format markdown \
+  --output reports/ci-failure-report.md
+```
 
 分析目录并输出 Markdown：
 
@@ -84,6 +93,31 @@ python -m agent_ci_failure_correlator init-config --output ci-failure-correlator
 - `--fail-on-cross-repo`：发现跨仓库重复失败时返回 `2`。
 - `--fail-on-any-failure`：发现任何失败时返回 `1`。
 - `--no-raw-events`：JSON 报告中不包含原始日志文本。
+
+### 处理 GitHub Actions 失败邮件
+
+如果你收到很多 CI 失败邮件，可以把邮件保存成 `.eml`，或把邮件正文复制成 `.txt`：
+
+```text
+Subject: [org/api-service] Run failed: CI - main
+Workflow: CI
+Job: pytest
+Branch: main
+Run URL: https://github.com/org/api-service/actions/runs/123456789
+
+ModuleNotFoundError: No module named 'shared_auth'
+```
+
+工具会把这些字段写入事件来源：
+
+- `source.repository`：`org/api-service`
+- `source.workflow`：`CI`
+- `source.job_name`：`pytest`
+- `source.run_id`：`123456789`
+- `source.url`：GitHub Actions 运行链接
+- `metadata.branch`：`main`
+
+邮件格式不完整也没关系；只要正文里有错误摘要，仍然会进入聚类。
 
 ## API 用法
 
@@ -158,6 +192,7 @@ print(result.to_dict()["summary"])
 样例输入位于 `examples/inputs/`：
 
 - `api-service-run.json` 和 `billing-run.json`：两个仓库都缺少 `shared_auth` Python 包。
+- `checkout-failure.eml`：GitHub Actions 失败邮件原文，同样缺少 `shared_auth`。
 - `webapp-job.json` 和 `admin-web-job.json`：两个前端仓库都找不到 `@org/ui-theme`。
 - `worker.log`：pytest 断言失败。
 - `search-junit.xml`：JUnit XML 断言失败。
@@ -173,7 +208,7 @@ python -m agent_ci_failure_correlator analyze examples/inputs --format markdown
 ```markdown
 ## Cross-Repository Repeats
 
-- **C001** `python-import`: 2 events across 2 repositories (...), confidence 0.73
+- **C001** `python-import`: 3 events across 3 repositories (...), confidence 0.74
 - **C002** `javascript-dependency`: 2 events across 2 repositories (...), confidence 0.76
 ```
 
@@ -182,7 +217,7 @@ JSON 报告核心字段：
 ```json
 {
   "summary": {
-    "event_count": 6,
+    "event_count": 7,
     "cluster_count": 4,
     "cross_repository_cluster_count": 2
   },
@@ -190,8 +225,8 @@ JSON 报告核心字段：
     {
       "cluster_id": "C001",
       "root_cause_labels": ["python-import"],
-      "confidence": 0.73,
-      "repositories": ["org/api-service", "org/billing-service"],
+      "confidence": 0.74,
+      "repositories": ["acme/checkout-service", "org/api-service", "org/billing-service"],
       "suggested_actions": ["Check Python dependencies..."]
     }
   ]
@@ -294,6 +329,7 @@ This tool produces:
 ### Features
 
 - Inputs: GitHub workflow run JSON, job JSON, JSONL/NDJSON, plain logs, JUnit XML, and exported correlator JSON.
+- GitHub Actions failure notifications: parse saved `.eml` messages or copied `.txt` bodies and extract repository, workflow, job, branch, run id, and run URL.
 - Log summarization: extracts error-bearing lines and local context.
 - Normalization: removes volatile paths, URLs, timestamps, hashes, versions, durations, and large numbers.
 - Rule labels: Python import, JavaScript dependency, assertion, network, timeout, permissions, lint, type-check, build tooling, runner environment, and container failures.
@@ -320,6 +356,14 @@ agent-ci-failure-correlator --help
 ```
 
 ### CLI Usage
+
+Analyze a directory of exported GitHub Actions failure emails or logs:
+
+```bash
+python -m agent_ci_failure_correlator analyze exported-failure-mails \
+  --format markdown \
+  --output reports/ci-failure-report.md
+```
 
 Generate a Markdown report:
 
@@ -355,6 +399,31 @@ Useful flags:
 - `--fail-on-cross-repo`: exit `2` when a repeated failure spans repositories.
 - `--fail-on-any-failure`: exit `1` when any failure is found.
 - `--no-raw-events`: omit raw log bodies from JSON output.
+
+### GitHub Actions Failure Emails
+
+If your inbox has many CI failure notifications, save them as `.eml` files or copy message bodies into `.txt` files:
+
+```text
+Subject: [org/api-service] Run failed: CI - main
+Workflow: CI
+Job: pytest
+Branch: main
+Run URL: https://github.com/org/api-service/actions/runs/123456789
+
+ModuleNotFoundError: No module named 'shared_auth'
+```
+
+The parser writes these fields into event source metadata:
+
+- `source.repository`: `org/api-service`
+- `source.workflow`: `CI`
+- `source.job_name`: `pytest`
+- `source.run_id`: `123456789`
+- `source.url`: GitHub Actions run URL
+- `metadata.branch`: `main`
+
+Incomplete email formats are still useful; if the body contains an error summary, the event can still be clustered.
 
 ### API Usage
 
@@ -406,7 +475,7 @@ Important options:
 
 ### Example Inputs and Outputs
 
-Sample inputs live in `examples/inputs/` and include Python import failures, npm module failures, pytest assertion failures, and JUnit XML.
+Sample inputs live in `examples/inputs/` and include Python import failures, a GitHub Actions failure email, npm module failures, pytest assertion failures, and JUnit XML.
 
 Run:
 
@@ -415,6 +484,15 @@ python -m agent_ci_failure_correlator analyze examples/inputs --format markdown
 ```
 
 You should see a `Cross-Repository Repeats` section with clusters such as `python-import` and `javascript-dependency`.
+
+The bundled inputs currently produce 7 events, 4 clusters, and 2 cross-repository repeat clusters. The `python-import` cluster includes 3 repositories, including the saved GitHub Actions email from `acme/checkout-service`.
+
+```markdown
+## Cross-Repository Repeats
+
+- **C001** `python-import`: 3 events across 3 repositories (...), confidence 0.74
+- **C002** `javascript-dependency`: 2 events across 2 repositories (...), confidence 0.76
+```
 
 ### Exit Codes
 
