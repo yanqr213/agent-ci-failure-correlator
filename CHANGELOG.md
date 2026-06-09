@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0 - 2026-06-09
+
+- Added GitHub owner and organization repository discovery for `fetch-github` via repeatable `--owner`.
+- Added discovery filters for repository name regex, archived repositories, forks, repository type, per-owner limits, and pagination.
+- Added Python API helpers `discover_repositories` and `fetch_failed_jobs_for_owners` with discovery option/result dataclasses.
+- Added unit and CLI coverage for owner discovery, filtering, warning handling, and mixed owner plus explicit repository fetches.
+- Expanded Chinese and English documentation with owner-level fetch workflows for maintainers handling many CI failure emails.
+
 ## 0.6.0 - 2026-06-09
 
 - Added `queue` and `queue-json` report formats that turn failure clusters into prioritized repair tasks.

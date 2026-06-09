@@ -51,8 +51,33 @@ class GitHubFetchResult:
     repositories: List[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class GitHubRepositoryDiscoveryOptions:
+    """Options for discovering repositories before collecting failures."""
+
+    per_owner_limit: int = 100
+    max_pages: int = 3
+    repo_type: str = "all"
+    include_archived: bool = False
+    include_forks: bool = False
+    name_pattern: str = ""
+
+
+@dataclass
+class GitHubRepositoryDiscoveryResult:
+    """Repositories discovered from one or more GitHub owners."""
+
+    repositories: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    owners: List[str] = field(default_factory=list)
+
+
 class GitHubApiError(RuntimeError):
     """Raised when the GitHub API cannot satisfy a request."""
+
+    def __init__(self, message: str, *, status_code: int = 0):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class GitHubClient:
@@ -94,6 +119,33 @@ class GitHubClient:
                 break
         return jobs
 
+    def list_owner_repositories(
+        self,
+        owner: str,
+        *,
+        page: int,
+        per_page: int,
+        repo_type: str = "all",
+    ) -> List[Mapping[str, Any]]:
+        """List repositories for a GitHub organization or public user profile."""
+
+        owner = _validate_owner(owner)
+        params = {"per_page": per_page, "page": page, "type": _repository_type(repo_type, endpoint="org")}
+        try:
+            data = self._request_json(f"/orgs/{owner}/repos", params=params)
+        except GitHubApiError as exc:
+            if exc.status_code != 404:
+                raise
+            user_params = {
+                "per_page": per_page,
+                "page": page,
+                "type": _repository_type(repo_type, endpoint="user"),
+            }
+            data = self._request_json(f"/users/{owner}/repos", params=user_params)
+        if not isinstance(data, list):
+            return []
+        return [repo for repo in data if isinstance(repo, Mapping)]
+
     def download_job_log(self, repository: str, job_id: str) -> str:
         body = self._request_bytes(f"/repos/{repository}/actions/jobs/{job_id}/logs")
         return _decode_log_body(body)
@@ -123,9 +175,66 @@ class GitHubClient:
                 return response.read()
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:500]
-            raise GitHubApiError(f"GitHub API returned HTTP {exc.code} for {path}: {detail}") from exc
+            raise GitHubApiError(
+                f"GitHub API returned HTTP {exc.code} for {path}: {detail}",
+                status_code=exc.code,
+            ) from exc
         except urllib.error.URLError as exc:
             raise GitHubApiError(f"GitHub API request failed for {path}: {exc.reason}") from exc
+
+
+def discover_repositories(
+    owners: Sequence[str],
+    options: Optional[GitHubRepositoryDiscoveryOptions] = None,
+    *,
+    client: Optional[GitHubClient] = None,
+) -> GitHubRepositoryDiscoveryResult:
+    """Discover accessible repositories for GitHub user or organization owners."""
+
+    opts = options or GitHubRepositoryDiscoveryOptions()
+    api = client or GitHubClient()
+    matcher = re.compile(opts.name_pattern) if opts.name_pattern else None
+    result = GitHubRepositoryDiscoveryResult(owners=[_validate_owner(owner) for owner in owners])
+    seen = set()
+    for owner in result.owners:
+        collected_for_owner = 0
+        per_page = 100
+        for page in range(1, max(1, opts.max_pages) + 1):
+            try:
+                repos = api.list_owner_repositories(
+                    owner,
+                    page=page,
+                    per_page=per_page,
+                    repo_type=opts.repo_type,
+                )
+            except GitHubApiError as exc:
+                result.warnings.append(f"{owner}: {exc}")
+                break
+            if not repos:
+                break
+            for repo in repos:
+                full_name = str(repo.get("full_name") or "")
+                try:
+                    normalized = _validate_repository(full_name)
+                except ValueError:
+                    continue
+                if repo.get("archived") and not opts.include_archived:
+                    continue
+                if repo.get("fork") and not opts.include_forks:
+                    continue
+                if matcher and not matcher.search(normalized):
+                    continue
+                key = normalized.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                result.repositories.append(normalized)
+                collected_for_owner += 1
+                if collected_for_owner >= max(1, opts.per_owner_limit):
+                    break
+            if collected_for_owner >= max(1, opts.per_owner_limit) or len(repos) < per_page:
+                break
+    return result
 
 
 def fetch_failed_jobs(
@@ -185,6 +294,23 @@ def fetch_failed_jobs(
                     collected += 1
             if collected >= opts.per_repo_limit or len(runs) < min(100, max(1, opts.per_repo_limit * 3)):
                 break
+    return result
+
+
+def fetch_failed_jobs_for_owners(
+    owners: Sequence[str],
+    fetch_options: Optional[GitHubFetchOptions] = None,
+    discovery_options: Optional[GitHubRepositoryDiscoveryOptions] = None,
+    *,
+    client: Optional[GitHubClient] = None,
+) -> GitHubFetchResult:
+    """Discover owner repositories and collect recent failed GitHub Actions jobs."""
+
+    api = client or GitHubClient()
+    discovered = discover_repositories(owners, discovery_options, client=api)
+    result = fetch_failed_jobs(discovered.repositories, fetch_options, client=api)
+    result.warnings = discovered.warnings + result.warnings
+    result.repositories = list(discovered.repositories)
     return result
 
 
@@ -378,6 +504,22 @@ def _validate_repository(repository: str) -> str:
     if not re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", cleaned):
         raise ValueError(f"Repository must use owner/name format: {repository}")
     return cleaned
+
+
+def _validate_owner(owner: str) -> str:
+    cleaned = owner.strip().strip("/")
+    if not re.match(r"^[A-Za-z0-9_.-]+$", cleaned):
+        raise ValueError(f"GitHub owner must be a user or organization name: {owner}")
+    return cleaned
+
+
+def _repository_type(repo_type: str, *, endpoint: str) -> str:
+    normalized = (repo_type or "all").strip().lower()
+    org_types = {"all", "public", "private", "forks", "sources", "member"}
+    user_types = {"all", "owner", "member"}
+    if endpoint == "org":
+        return normalized if normalized in org_types else "all"
+    return normalized if normalized in user_types else "all"
 
 
 def _decode_log_body(body: bytes) -> str:

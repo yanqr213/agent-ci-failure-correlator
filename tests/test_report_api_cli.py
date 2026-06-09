@@ -200,6 +200,113 @@ class ReportApiCliTests(unittest.TestCase):
         finally:
             cli_module._github_client_factory = original
 
+    def test_cli_fetch_github_requires_repository_or_owner(self):
+        code = main(["fetch-github", "--no-logs"])
+        self.assertEqual(code, EXIT_USAGE_ERROR)
+
+    def test_cli_fetch_github_discovers_owner_repositories(self):
+        class FakeClient:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.owner_calls = []
+
+            def list_owner_repositories(self, owner, *, page, per_page, repo_type="all"):
+                self.owner_calls.append((owner, page, per_page, repo_type))
+                if page > 1:
+                    return []
+                return [
+                    {"full_name": f"{owner}/api", "archived": False, "fork": False},
+                    {"full_name": f"{owner}/docs", "archived": False, "fork": False},
+                    {"full_name": f"{owner}/old", "archived": True, "fork": False},
+                ]
+
+            def list_workflow_runs(self, repository, *, page, per_page, branch="", created=""):
+                if page > 1:
+                    return []
+                return [
+                    {
+                        "id": f"{repository}-9",
+                        "name": "CI",
+                        "conclusion": "failure",
+                        "html_url": f"https://github.com/{repository}/actions/runs/9",
+                    }
+                ]
+
+            def list_run_jobs(self, repository, run_id):
+                return [{"id": f"{repository}-99", "name": "tests", "conclusion": "failure"}]
+
+            def download_job_log(self, repository, job_id):
+                return f"ModuleNotFoundError: No module named shared_{repository.split('/')[-1]}"
+
+        original = cli_module._github_client_factory
+        cli_module._github_client_factory = FakeClient
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp) / "failures.jsonl"
+                code = main(
+                    [
+                        "fetch-github",
+                        "--owner",
+                        "org",
+                        "--repo-name-pattern",
+                        "/api$",
+                        "--output",
+                        str(output),
+                        "--limit",
+                        "5",
+                    ]
+                )
+                self.assertEqual(code, EXIT_SUCCESS)
+                rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+                self.assertEqual(["org/api"], [row["repository"] for row in rows])
+                result = analyze_paths([str(output)], config=CorrelatorConfig.default())
+                self.assertEqual("org/api", result.events[0].source.repository)
+        finally:
+            cli_module._github_client_factory = original
+
+    def test_cli_fetch_github_combines_owner_and_explicit_repositories(self):
+        class FakeClient:
+            def __init__(self, **kwargs):
+                self.requested_repositories = []
+                pass
+
+            def list_owner_repositories(self, owner, *, page, per_page, repo_type="all"):
+                if page > 1:
+                    return []
+                return [{"full_name": f"{owner}/api", "archived": False, "fork": False}]
+
+            def list_workflow_runs(self, repository, *, page, per_page, branch="", created=""):
+                self.requested_repositories.append(repository)
+                if page > 1:
+                    return []
+                return [{"id": f"{repository}-9", "name": "CI", "conclusion": "failure"}]
+
+            def list_run_jobs(self, repository, run_id):
+                return [{"id": f"{repository}-99", "name": "tests", "conclusion": "failure"}]
+
+            def download_job_log(self, repository, job_id):
+                return "ModuleNotFoundError: No module named shared_auth"
+
+        original = cli_module._github_client_factory
+        fake_client = None
+
+        def factory(**kwargs):
+            nonlocal fake_client
+            fake_client = FakeClient(**kwargs)
+            return fake_client
+
+        cli_module._github_client_factory = factory
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp) / "failures.jsonl"
+                code = main(["fetch-github", "extra/repo", "org/api", "--owner", "org", "--output", str(output)])
+                self.assertEqual(code, EXIT_SUCCESS)
+                rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+                self.assertEqual({"org/api", "extra/repo"}, {row["repository"] for row in rows})
+                self.assertEqual(["org/api", "extra/repo"], fake_client.requested_repositories)
+        finally:
+            cli_module._github_client_factory = original
+
 
 if __name__ == "__main__":
     unittest.main()

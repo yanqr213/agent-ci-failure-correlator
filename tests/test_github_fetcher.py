@@ -2,8 +2,12 @@ import json
 import unittest
 
 from agent_ci_failure_correlator.github_fetcher import (
+    GitHubApiError,
     GitHubFetchOptions,
+    GitHubRepositoryDiscoveryOptions,
+    discover_repositories,
     fetch_failed_jobs,
+    fetch_failed_jobs_for_owners,
     read_repositories,
     redact_log,
     render_jsonl,
@@ -13,6 +17,20 @@ from agent_ci_failure_correlator.github_fetcher import (
 class FakeGitHubClient:
     def __init__(self):
         self.downloaded = []
+        self.repo_pages = []
+
+    def list_owner_repositories(self, owner, *, page, per_page, repo_type="all"):
+        self.repo_pages.append((owner, page, per_page, repo_type))
+        if owner == "broken":
+            raise GitHubApiError("boom")
+        if page > 1:
+            return []
+        return [
+            {"full_name": f"{owner}/api", "archived": False, "fork": False},
+            {"full_name": f"{owner}/web", "archived": False, "fork": False},
+            {"full_name": f"{owner}/old", "archived": True, "fork": False},
+            {"full_name": f"{owner}/forked", "archived": False, "fork": True},
+        ]
 
     def list_workflow_runs(self, repository, *, page, per_page, branch="", created=""):
         self.last_branch = branch
@@ -100,6 +118,50 @@ class GitHubFetcherTests(unittest.TestCase):
         self.assertNotIn("abcdef", text)
         self.assertNotIn("123456", text)
         self.assertIn("[REDACTED]", text)
+
+    def test_discover_repositories_filters_owner_repos(self):
+        client = FakeGitHubClient()
+        result = discover_repositories(
+            ["org"],
+            GitHubRepositoryDiscoveryOptions(per_owner_limit=10, name_pattern=r"/a"),
+            client=client,
+        )
+
+        self.assertEqual(["org/api"], result.repositories)
+        self.assertEqual([], result.warnings)
+        self.assertEqual(("org", 1, 100, "all"), client.repo_pages[0])
+
+    def test_discover_repositories_can_include_archived_and_forks(self):
+        result = discover_repositories(
+            ["org"],
+            GitHubRepositoryDiscoveryOptions(
+                per_owner_limit=10,
+                include_archived=True,
+                include_forks=True,
+            ),
+            client=FakeGitHubClient(),
+        )
+
+        self.assertEqual(["org/api", "org/web", "org/old", "org/forked"], result.repositories)
+
+    def test_discover_repositories_records_owner_warnings(self):
+        result = discover_repositories(["broken"], client=FakeGitHubClient())
+
+        self.assertEqual([], result.repositories)
+        self.assertEqual(1, len(result.warnings))
+        self.assertIn("broken", result.warnings[0])
+
+    def test_fetch_failed_jobs_for_owners_discovers_then_fetches(self):
+        result = fetch_failed_jobs_for_owners(
+            ["org"],
+            GitHubFetchOptions(per_repo_limit=1, include_logs=False),
+            GitHubRepositoryDiscoveryOptions(per_owner_limit=2),
+            client=FakeGitHubClient(),
+        )
+
+        self.assertEqual(["org/api", "org/web"], result.repositories)
+        self.assertEqual(2, len(result.records))
+        self.assertEqual({"org/api", "org/web"}, {record["repository"] for record in result.records})
 
 
 if __name__ == "__main__":

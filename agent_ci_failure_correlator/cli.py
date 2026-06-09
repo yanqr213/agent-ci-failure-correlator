@@ -11,7 +11,16 @@ from typing import Iterable, List, Optional
 from . import __version__
 from .api import analyze_paths
 from .config import CorrelatorConfig, load_config
-from .github_fetcher import GitHubClient, GitHubFetchOptions, fetch_failed_jobs, read_repositories, render_jsonl, token_from_environment
+from .github_fetcher import (
+    GitHubClient,
+    GitHubFetchOptions,
+    GitHubRepositoryDiscoveryOptions,
+    fetch_failed_jobs,
+    fetch_failed_jobs_for_owners,
+    read_repositories,
+    render_jsonl,
+    token_from_environment,
+)
 from .models import AnalysisResult
 from .report import render_brief, render_json, render_markdown, render_sarif
 from .triage import render_queue_json, render_queue_markdown
@@ -66,6 +75,13 @@ def build_parser() -> argparse.ArgumentParser:
     fetch = subparsers.add_parser("fetch-github", help="Fetch recent GitHub Actions failures as JSONL records.")
     fetch.add_argument("repositories", nargs="*", help="Repositories in owner/name format.")
     fetch.add_argument("--repo-file", help="Newline-delimited repository list. Lines starting with # are ignored.")
+    fetch.add_argument("--owner", action="append", default=[], help="Discover repositories from a GitHub user or organization. Repeatable.")
+    fetch.add_argument("--repo-name-pattern", help="Regex filter applied to discovered owner/name repositories.")
+    fetch.add_argument("--include-archived", action="store_true", help="Include archived repositories discovered from --owner.")
+    fetch.add_argument("--include-forks", action="store_true", help="Include forked repositories discovered from --owner.")
+    fetch.add_argument("--repo-type", choices=["all", "public", "private", "forks", "sources", "member", "owner"], default="all", help="GitHub repository type filter for owner discovery.")
+    fetch.add_argument("--repo-limit", type=int, default=100, help="Maximum repositories to discover per owner.")
+    fetch.add_argument("--repo-pages", type=int, default=3, help="Maximum owner repository pages to inspect.")
     fetch.add_argument("-o", "--output", help="Output JSONL path. Defaults to stdout.")
     fetch.add_argument("--token-env", default="GITHUB_TOKEN,GH_TOKEN", help="Comma-separated environment variables to read a GitHub token from.")
     fetch.add_argument("--branch", help="Only fetch runs from this branch.")
@@ -154,8 +170,9 @@ def _init_config(args: argparse.Namespace) -> int:
 def _fetch_github(args: argparse.Namespace) -> int:
     try:
         repositories = read_repositories(args.repositories, args.repo_file or "")
-        if not repositories:
-            raise ValueError("At least one repository or --repo-file entry is required.")
+        owners = [owner.strip() for owner in args.owner if owner and owner.strip()]
+        if not repositories and not owners:
+            raise ValueError("At least one repository, --repo-file entry, or --owner is required.")
         options = GitHubFetchOptions(
             per_repo_limit=max(1, args.limit),
             max_pages=max(1, args.max_pages),
@@ -168,7 +185,29 @@ def _fetch_github(args: argparse.Namespace) -> int:
             conclusions=tuple(args.conclusion or ["failure", "timed_out", "cancelled"]),
         )
         client = _github_client_factory(token=token_from_environment(args.token_env), base_url=args.api_url)
-        result = fetch_failed_jobs(repositories, options, client=client)
+        if owners:
+            discovery = GitHubRepositoryDiscoveryOptions(
+                per_owner_limit=max(1, args.repo_limit),
+                max_pages=max(1, args.repo_pages),
+                repo_type=args.repo_type,
+                include_archived=args.include_archived,
+                include_forks=args.include_forks,
+                name_pattern=args.repo_name_pattern or "",
+            )
+            result = fetch_failed_jobs_for_owners(owners, options, discovery, client=client)
+            if repositories:
+                discovered = {repo.lower() for repo in result.repositories}
+                remaining_repositories = [repo for repo in repositories if repo.lower() not in discovered]
+                explicit_result = fetch_failed_jobs(remaining_repositories, options, client=client)
+                result.records.extend(explicit_result.records)
+                result.warnings.extend(explicit_result.warnings)
+                seen = {repo.lower() for repo in result.repositories}
+                for repo in explicit_result.repositories:
+                    if repo.lower() not in seen:
+                        result.repositories.append(repo)
+                        seen.add(repo.lower())
+        else:
+            result = fetch_failed_jobs(repositories, options, client=client)
     except Exception as exc:
         print(f"agent-ci-failure-correlator: {exc}", file=sys.stderr)
         return EXIT_USAGE_ERROR

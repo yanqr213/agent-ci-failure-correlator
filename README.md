@@ -21,7 +21,7 @@ The complete English guide is available below in [English](#english).
 
 - 支持输入：GitHub workflow run JSON、job JSON、JSONL/NDJSON、纯日志、JUnit XML、工具自身导出的 JSON。
 - 支持 GitHub Actions 失败通知邮件：`.eml` 原文或转存 `.txt` 都会提取仓库、workflow、job、branch、run id 和 run URL。
-- 支持 GitHub Actions API 抓取：按仓库、分支、workflow、时间范围抓取失败 job，并对日志做常见 secret 脱敏。
+- 支持 GitHub Actions API 抓取：按仓库或 GitHub owner/org 自动发现仓库，再按分支、workflow、时间范围抓取失败 job，并对日志做常见 secret 脱敏。
 - 日志摘要：提取错误、失败、Traceback、timeout、npm/pytest 等关键行，并保留上下文。
 - 噪声归一化：隐藏路径、URL、时间戳、长哈希、版本号、持续时间和大数字。
 - 规则标签：识别 Python import、JavaScript dependency、测试断言、网络、超时、权限、lint、类型检查、构建、runner 环境、容器等根因。
@@ -136,6 +136,17 @@ python -m agent_ci_failure_correlator analyze exported-failures.jsonl \
   --output ci-failure-brief.md
 ```
 
+如果你维护的是一个账号或组织下的一批仓库，不想手写 repo 列表，可以让工具先发现仓库：
+
+```bash
+python -m agent_ci_failure_correlator fetch-github \
+  --owner yanqr213 \
+  --repo-name-pattern "agent|prompt|mcp" \
+  --days 3 \
+  --no-logs \
+  --output owner-failures.jsonl
+```
+
 常用参数：
 
 - `--similarity-threshold 0.56`：调整聚类阈值，越低越容易合并。
@@ -149,6 +160,10 @@ python -m agent_ci_failure_correlator analyze exported-failures.jsonl \
 `fetch-github` 常用参数：
 
 - `--repo-file repos.txt`：从文件读取仓库列表，一行一个 `owner/name`，支持 `#` 注释。
+- `--owner USER_OR_ORG`：从 GitHub 用户或组织发现仓库后再抓取失败记录，可重复。
+- `--repo-name-pattern "regex"`：只保留匹配正则的已发现仓库。
+- `--include-archived` / `--include-forks`：默认跳过 archived 和 fork 仓库；需要时显式开启。
+- `--repo-limit 100` / `--repo-pages 3`：限制每个 owner 发现的仓库数量和分页。
 - `--token-env GITHUB_TOKEN,GH_TOKEN`：从指定环境变量读取 token。公开仓库可不传 token，但容易遇到 rate limit；私有仓库需要 token 有 Actions 读取权限。
 - `--workflow CI` / `--branch main`：缩小抓取范围。
 - `--since 2026-06-01T00:00:00Z` 或 `--days 14`：限制时间窗口。
@@ -159,7 +174,7 @@ python -m agent_ci_failure_correlator analyze exported-failures.jsonl \
 
 ### 从 GitHub 抓取失败记录
 
-`fetch-github` 适合你已经知道一组仓库，并希望快速把最近失败 run 拉下来做聚类的场景：
+`fetch-github` 适合两种场景：你已经知道一组仓库，或者你只知道一个 GitHub 用户/组织，想先自动发现仓库再抓取最近失败 run。
 
 ```bash
 cat > repos.txt <<'EOF'
@@ -178,6 +193,17 @@ python -m agent_ci_failure_correlator analyze failures.jsonl \
   --similarity-threshold 0.56 \
   --format markdown \
   --output reports/ci-failure-report.md
+```
+
+按 owner 自动发现仓库：
+
+```bash
+python -m agent_ci_failure_correlator fetch-github \
+  --owner org \
+  --repo-name-pattern "service|webapp" \
+  --workflow CI \
+  --days 3 \
+  --output failures.jsonl
 ```
 
 JSONL 每一行是一条失败 job 记录，包含 `repository`、`workflow`、`run_id`、`job_name`、`conclusion`、`url`、`steps` 和脱敏后的 `log`。这些字段会被现有 parser 归一化为标准 `FailureEvent`，因此 brief、Markdown、JSON、SARIF 输出都可以直接复用。
@@ -240,13 +266,20 @@ print(result.to_dict()["summary"])
 从 GitHub API 抓取后直接在内存中分析：
 
 ```python
-from agent_ci_failure_correlator import CorrelatorConfig, GitHubClient, GitHubFetchOptions, fetch_failed_jobs
+from agent_ci_failure_correlator import (
+    CorrelatorConfig,
+    GitHubClient,
+    GitHubFetchOptions,
+    GitHubRepositoryDiscoveryOptions,
+    fetch_failed_jobs_for_owners,
+)
 from agent_ci_failure_correlator.api import analyze_records
 
 client = GitHubClient(token="...", timeout=20)
-fetched = fetch_failed_jobs(
-    ["org/api-service", "org/webapp"],
+fetched = fetch_failed_jobs_for_owners(
+    ["org"],
     GitHubFetchOptions(days=7, per_repo_limit=10),
+    GitHubRepositoryDiscoveryOptions(name_pattern="service|webapp"),
     client=client,
 )
 
@@ -508,7 +541,7 @@ This tool produces:
 
 - Inputs: GitHub workflow run JSON, job JSON, JSONL/NDJSON, plain logs, JUnit XML, and exported correlator JSON.
 - GitHub Actions failure notifications: parse saved `.eml` messages or copied `.txt` bodies and extract repository, workflow, job, branch, run id, and run URL.
-- GitHub Actions API fetcher: collect recent failed runs/jobs by repository, branch, workflow, and time window, then export JSONL for offline analysis.
+- GitHub Actions API fetcher: collect recent failed runs/jobs by explicit repository or by discovering repositories from a GitHub user or organization, then export JSONL for offline analysis.
 - Log summarization: extracts error-bearing lines and local context.
 - Normalization: removes volatile paths, URLs, timestamps, hashes, versions, durations, and large numbers.
 - Rule labels: Python import, JavaScript dependency, assertion, network, timeout, permissions, lint, type-check, build tooling, runner environment, and container failures.
@@ -619,6 +652,17 @@ python -m agent_ci_failure_correlator analyze exported-failures.jsonl \
   --output ci-failure-brief.md
 ```
 
+When you maintain many repositories under one account or organization, discover them first:
+
+```bash
+python -m agent_ci_failure_correlator fetch-github \
+  --owner yanqr213 \
+  --repo-name-pattern "agent|prompt|mcp" \
+  --days 3 \
+  --no-logs \
+  --output owner-failures.jsonl
+```
+
 Useful flags:
 
 - `--similarity-threshold 0.56`: lower values merge more aggressively.
@@ -632,6 +676,10 @@ Useful flags:
 Useful `fetch-github` flags:
 
 - `--repo-file repos.txt`: read repositories from a newline-delimited file.
+- `--owner USER_OR_ORG`: discover repositories from a GitHub user or organization before fetching failures. Repeatable.
+- `--repo-name-pattern "regex"`: keep only discovered `owner/name` repositories matching a regex.
+- `--include-archived` / `--include-forks`: archived and forked repositories are skipped by default.
+- `--repo-limit 100` / `--repo-pages 3`: cap repository discovery per owner.
 - `--token-env GITHUB_TOKEN,GH_TOKEN`: choose token environment variables. Public repositories may work without a token, but private repositories and larger scans need one with Actions read access.
 - `--workflow CI` / `--branch main`: narrow the scan.
 - `--since 2026-06-01T00:00:00Z` or `--days 14`: control the time window.
@@ -642,7 +690,7 @@ Fetched JSONL records do not contain the token. Logs are redacted for common `Au
 
 ### Fetch From GitHub
 
-Use `fetch-github` when you know the repositories and want to turn recent failed Actions runs into correlator input:
+Use `fetch-github` when you know the repositories or when you only know the GitHub user or organization that owns them:
 
 ```bash
 cat > repos.txt <<'EOF'
@@ -661,6 +709,17 @@ python -m agent_ci_failure_correlator analyze failures.jsonl \
   --similarity-threshold 0.56 \
   --format markdown \
   --output reports/ci-failure-report.md
+```
+
+Discover repositories by owner:
+
+```bash
+python -m agent_ci_failure_correlator fetch-github \
+  --owner org \
+  --repo-name-pattern "service|webapp" \
+  --workflow CI \
+  --days 3 \
+  --output failures.jsonl
 ```
 
 Each JSONL row is one failed job with `repository`, `workflow`, `run_id`, `job_name`, `conclusion`, `url`, `steps`, and redacted `log`. The normal parser turns those records into `FailureEvent` objects, so brief, Markdown, JSON, and SARIF reports all work unchanged.
@@ -723,13 +782,20 @@ print(result.to_dict()["summary"])
 Fetch from GitHub and analyze in memory:
 
 ```python
-from agent_ci_failure_correlator import CorrelatorConfig, GitHubClient, GitHubFetchOptions, fetch_failed_jobs
+from agent_ci_failure_correlator import (
+    CorrelatorConfig,
+    GitHubClient,
+    GitHubFetchOptions,
+    GitHubRepositoryDiscoveryOptions,
+    fetch_failed_jobs_for_owners,
+)
 from agent_ci_failure_correlator.api import analyze_records
 
 client = GitHubClient(token="...", timeout=20)
-fetched = fetch_failed_jobs(
-    ["org/api-service", "org/webapp"],
+fetched = fetch_failed_jobs_for_owners(
+    ["org"],
     GitHubFetchOptions(days=7, per_repo_limit=10),
+    GitHubRepositoryDiscoveryOptions(name_pattern="service|webapp"),
     client=client,
 )
 
