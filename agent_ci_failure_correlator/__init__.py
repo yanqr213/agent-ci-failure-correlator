@@ -12,6 +12,14 @@ from .github_fetcher import (
     fetch_failed_jobs,
     fetch_failed_jobs_for_owners,
 )
+from .github_audit import (
+    GitHubCurrentAuditOptions,
+    GitHubCurrentAuditResult,
+    audit_current_actions,
+    audit_current_actions_for_owners,
+    render_current_audit_json,
+    render_current_audit_markdown,
+)
 from .models import FailureEvent, RootCauseCluster, SourceRef
 from .triage import TriageTask, build_triage_queue, render_queue_json, render_queue_markdown
 
@@ -19,6 +27,8 @@ __all__ = [
     "CorrelatorConfig",
     "FailureEvent",
     "GitHubClient",
+    "GitHubCurrentAuditOptions",
+    "GitHubCurrentAuditResult",
     "GitHubFetchOptions",
     "GitHubFetchResult",
     "GitHubRepositoryDiscoveryOptions",
@@ -28,12 +38,16 @@ __all__ = [
     "TriageTask",
     "analyze",
     "analyze_paths",
+    "audit_current_actions",
+    "audit_current_actions_for_owners",
     "build_triage_queue",
     "discover_repositories",
     "fetch_failed_jobs",
     "fetch_failed_jobs_for_owners",
+    "render_current_audit_json",
+    "render_current_audit_markdown",
     "render_queue_json",
     "render_queue_markdown",
 ]
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"

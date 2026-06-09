@@ -106,6 +106,53 @@ class GitHubClient:
         runs = data.get("workflow_runs", []) if isinstance(data, Mapping) else []
         return [run for run in runs if isinstance(run, Mapping)]
 
+    def get_repository(self, repository: str) -> Mapping[str, Any]:
+        """Return repository metadata, including the default branch."""
+
+        data = self._request_json(f"/repos/{repository}")
+        return data if isinstance(data, Mapping) else {}
+
+    def list_current_workflow_runs(
+        self,
+        repository: str,
+        *,
+        page: int,
+        per_page: int,
+        branch: str = "",
+        head_sha: str = "",
+        exclude_pull_requests: bool = False,
+    ) -> List[Mapping[str, Any]]:
+        """List recent workflow runs without forcing completed status."""
+
+        params: Dict[str, Any] = {"per_page": per_page, "page": page}
+        if branch:
+            params["branch"] = branch
+        if head_sha:
+            params["head_sha"] = head_sha
+        if exclude_pull_requests:
+            params["exclude_pull_requests"] = "true"
+        data = self._request_json(f"/repos/{repository}/actions/runs", params=params)
+        runs = data.get("workflow_runs", []) if isinstance(data, Mapping) else []
+        return [run for run in runs if isinstance(run, Mapping)]
+
+    def list_pull_requests(
+        self,
+        repository: str,
+        *,
+        page: int,
+        per_page: int,
+        state: str = "open",
+    ) -> List[Mapping[str, Any]]:
+        """List pull requests for current-status audits."""
+
+        data = self._request_json(
+            f"/repos/{repository}/pulls",
+            params={"state": state, "per_page": per_page, "page": page},
+        )
+        if not isinstance(data, list):
+            return []
+        return [item for item in data if isinstance(item, Mapping)]
+
     def list_run_jobs(self, repository: str, run_id: str) -> List[Mapping[str, Any]]:
         jobs: List[Mapping[str, Any]] = []
         for page in range(1, 11):

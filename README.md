@@ -16,12 +16,14 @@ The complete English guide is available below in [English](#english).
 - 可直接发给维护者或 agent 的 Markdown 报告
 - 可接入自动化与 GitHub Code Scanning 的 JSON/SARIF 报告和退出码
 - 从 GitHub Actions API 抓取最近失败 run/job，导出 JSONL 后离线聚类
+- 当前状态审计：区分“邮件里的历史失败”和“默认分支 / 打开 PR 现在仍然红或 pending”
 
 ## 功能
 
 - 支持输入：GitHub workflow run JSON、job JSON、JSONL/NDJSON、纯日志、JUnit XML、工具自身导出的 JSON。
 - 支持 GitHub Actions 失败通知邮件：`.eml` 原文或转存 `.txt` 都会提取仓库、workflow、job、branch、run id 和 run URL。
 - 支持 GitHub Actions API 抓取：按仓库或 GitHub owner/org 自动发现仓库，再按分支、workflow、时间范围抓取失败 job，并对日志做常见 secret 脱敏。
+- 支持当前 Actions 状态审计：扫描默认分支最新 workflow head 和打开 PR 的最新 workflow head，输出当前仍失败或 pending 的项目。
 - 日志摘要：提取错误、失败、Traceback、timeout、npm/pytest 等关键行，并保留上下文。
 - 噪声归一化：隐藏路径、URL、时间戳、长哈希、版本号、持续时间和大数字。
 - 规则标签：识别 Python import、JavaScript dependency、测试断言、网络、超时、权限、lint、类型检查、构建、runner 环境、容器等根因。
@@ -147,6 +149,26 @@ python -m agent_ci_failure_correlator fetch-github \
   --output owner-failures.jsonl
 ```
 
+先判断一批 CI 失败邮件是否仍需要处理：
+
+```bash
+python -m agent_ci_failure_correlator audit-github \
+  --owner yanqr213 \
+  --repo-name-pattern "agent|prompt|mcp" \
+  --format markdown \
+  --output current-actions.md
+```
+
+把当前状态输出为 JSON，并在仍有失败或 pending workflow head 时让命令失败：
+
+```bash
+python -m agent_ci_failure_correlator audit-github \
+  --owner yanqr213 \
+  --format json \
+  --output current-actions.json \
+  --fail-on-current-problem
+```
+
 常用参数：
 
 - `--similarity-threshold 0.56`：调整聚类阈值，越低越容易合并。
@@ -171,6 +193,17 @@ python -m agent_ci_failure_correlator fetch-github \
 - `--log-chars 20000`：限制每个 job 写入的脱敏日志长度。
 
 导出的 JSONL 不会写入 token；日志会脱敏常见 `Authorization`、GitHub token、OpenAI key、Slack token、`password=`、`api_key=` 等形态。真正敏感的业务日志仍建议只在私有环境保存。
+
+`audit-github` 常用参数：
+
+- `--owner USER_OR_ORG` / `--repo-file repos.txt`：按 owner 自动发现仓库，或读取固定仓库列表。
+- `--no-open-prs`：只看默认分支，不检查打开 PR。
+- `--ignore-pending`：只把 completed 且失败的 workflow head 当作问题，不把 queued/in-progress 算作问题。
+- `--format markdown|json`：Markdown 适合人工 triage，JSON 使用稳定 schema `agent-ci-failure-correlator.current-actions.v1`。
+- `--fail-on-current-problem`：发现当前失败或 pending workflow head 时返回退出码 `1`。
+- `--fail-on-warning`：有仓库无法审计时返回退出码 `3`。
+
+推荐处理顺序：收到大量 CI 失败邮件时，先运行 `audit-github`。如果结果是 `CLEAR`，这些邮件多半是历史失败或已被后续提交修复；如果仍有 current problems，再运行 `fetch-github` + `analyze` 聚类真正需要修复的日志。
 
 ### 从 GitHub 抓取失败记录
 
@@ -207,6 +240,44 @@ python -m agent_ci_failure_correlator fetch-github \
 ```
 
 JSONL 每一行是一条失败 job 记录，包含 `repository`、`workflow`、`run_id`、`job_name`、`conclusion`、`url`、`steps` 和脱敏后的 `log`。这些字段会被现有 parser 归一化为标准 `FailureEvent`，因此 brief、Markdown、JSON、SARIF 输出都可以直接复用。
+
+### 审计当前 GitHub Actions 状态
+
+`audit-github` 解决的是另一个问题：失败邮件可能是旧 run 产生的，但默认分支或 PR 后续已经绿了。这个命令不下载日志，也不做聚类；它只检查每个仓库当前默认分支和打开 PR 的最新 workflow head。
+
+```bash
+python -m agent_ci_failure_correlator audit-github \
+  --repo-file repos.txt \
+  --format markdown \
+  --output current-actions.md
+```
+
+Markdown 报告会给出 `CLEAR` 或 `ACTION NEEDED` 决策。JSON 输出适合放进机器人或 CI：
+
+```json
+{
+  "schema": "agent-ci-failure-correlator.current-actions.v1",
+  "summary": {
+    "repository_count": 140,
+    "workflow_head_count": 138,
+    "open_pull_request_count": 4,
+    "problem_count": 0,
+    "has_current_problems": false
+  },
+  "problems": []
+}
+```
+
+如果你希望 CI 或维护脚本在仍有红灯时失败：
+
+```bash
+python -m agent_ci_failure_correlator audit-github \
+  --owner org \
+  --format json \
+  --fail-on-current-problem
+```
+
+这个命令会把默认分支 scope 标成 `default:main`，把打开 PR 标成 `open-pr:123`。因此你可以直接区分“主分支当前红了”“某个 PR 当前红了”“只是已关闭 PR 或已删除分支的历史失败”。
 
 ### 处理 GitHub Actions 失败邮件
 
@@ -284,6 +355,27 @@ fetched = fetch_failed_jobs_for_owners(
 )
 
 result = analyze_records(fetched.records, config=CorrelatorConfig(similarity_threshold=0.56))
+print(result.to_dict()["summary"])
+```
+
+审计当前 GitHub Actions 状态：
+
+```python
+from agent_ci_failure_correlator import (
+    GitHubClient,
+    GitHubCurrentAuditOptions,
+    audit_current_actions,
+    render_current_audit_markdown,
+)
+
+client = GitHubClient(token="...", timeout=20)
+result = audit_current_actions(
+    ["org/api-service", "org/webapp"],
+    GitHubCurrentAuditOptions(include_open_prs=True),
+    client=client,
+)
+
+print(render_current_audit_markdown(result))
 print(result.to_dict()["summary"])
 ```
 
@@ -460,6 +552,35 @@ jobs:
           path: ci-failure-brief.md
 ```
 
+如果你的目标是每天检查一批仓库是否仍有当前红灯，可以只运行当前状态审计：
+
+```yaml
+name: Audit Current CI Status
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * *"
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install git+https://github.com/yanqr213/agent-ci-failure-correlator.git
+      - run: |
+          python -m agent_ci_failure_correlator audit-github \
+            --owner yanqr213 \
+            --repo-name-pattern "agent|prompt|mcp" \
+            --format markdown \
+            --output current-actions.md \
+            --fail-on-current-problem
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
 如果要把聚类结果上传到 GitHub Code Scanning：
 
 ```yaml
@@ -536,12 +657,14 @@ This tool produces:
 - SARIF reports for GitHub Code Scanning
 - CI-friendly exit codes
 - GitHub Actions API fetching for recent failed jobs
+- current-status audits that separate historical failure emails from default branches or open PRs that are still red or pending
 
 ### Features
 
 - Inputs: GitHub workflow run JSON, job JSON, JSONL/NDJSON, plain logs, JUnit XML, and exported correlator JSON.
 - GitHub Actions failure notifications: parse saved `.eml` messages or copied `.txt` bodies and extract repository, workflow, job, branch, run id, and run URL.
 - GitHub Actions API fetcher: collect recent failed runs/jobs by explicit repository or by discovering repositories from a GitHub user or organization, then export JSONL for offline analysis.
+- Current Actions auditor: inspect the latest workflow heads for default branches and open pull requests, then report what is still failing or pending now.
 - Log summarization: extracts error-bearing lines and local context.
 - Normalization: removes volatile paths, URLs, timestamps, hashes, versions, durations, and large numbers.
 - Rule labels: Python import, JavaScript dependency, assertion, network, timeout, permissions, lint, type-check, build tooling, runner environment, and container failures.
@@ -663,6 +786,26 @@ python -m agent_ci_failure_correlator fetch-github \
   --output owner-failures.jsonl
 ```
 
+Check whether a burst of CI failure emails still needs action:
+
+```bash
+python -m agent_ci_failure_correlator audit-github \
+  --owner yanqr213 \
+  --repo-name-pattern "agent|prompt|mcp" \
+  --format markdown \
+  --output current-actions.md
+```
+
+Emit JSON and fail the command when any current workflow head is failing or pending:
+
+```bash
+python -m agent_ci_failure_correlator audit-github \
+  --owner yanqr213 \
+  --format json \
+  --output current-actions.json \
+  --fail-on-current-problem
+```
+
 Useful flags:
 
 - `--similarity-threshold 0.56`: lower values merge more aggressively.
@@ -687,6 +830,17 @@ Useful `fetch-github` flags:
 - `--log-chars 20000`: cap each redacted job log.
 
 Fetched JSONL records do not contain the token. Logs are redacted for common `Authorization`, GitHub token, OpenAI key, Slack token, `password=`, and `api_key=` shapes, but sensitive business logs should still stay in a private workspace.
+
+Useful `audit-github` flags:
+
+- `--owner USER_OR_ORG` / `--repo-file repos.txt`: discover repositories by owner or audit a fixed list.
+- `--no-open-prs`: audit only default branches.
+- `--ignore-pending`: treat only completed failed workflow heads as problems, not queued or in-progress heads.
+- `--format markdown|json`: Markdown is for human triage; JSON uses the stable `agent-ci-failure-correlator.current-actions.v1` schema.
+- `--fail-on-current-problem`: exit `1` when a current failing or pending workflow head exists.
+- `--fail-on-warning`: exit `3` when a repository could not be audited.
+
+Recommended workflow: when many CI failure emails arrive, run `audit-github` first. If the result is `CLEAR`, the emails are probably historical failures already fixed by later commits or reruns. If current problems remain, run `fetch-github` and `analyze` to cluster the logs that still need repair.
 
 ### Fetch From GitHub
 
@@ -723,6 +877,44 @@ python -m agent_ci_failure_correlator fetch-github \
 ```
 
 Each JSONL row is one failed job with `repository`, `workflow`, `run_id`, `job_name`, `conclusion`, `url`, `steps`, and redacted `log`. The normal parser turns those records into `FailureEvent` objects, so brief, Markdown, JSON, and SARIF reports all work unchanged.
+
+### Audit Current GitHub Actions Status
+
+`audit-github` solves a different problem from `fetch-github`: a failure email may come from an old run even though the default branch or PR became green later. This command does not download logs or cluster failures. It only checks the latest workflow head for each repository default branch and open pull request.
+
+```bash
+python -m agent_ci_failure_correlator audit-github \
+  --repo-file repos.txt \
+  --format markdown \
+  --output current-actions.md
+```
+
+The Markdown report returns a `CLEAR` or `ACTION NEEDED` decision. JSON output is suitable for bots and CI:
+
+```json
+{
+  "schema": "agent-ci-failure-correlator.current-actions.v1",
+  "summary": {
+    "repository_count": 140,
+    "workflow_head_count": 138,
+    "open_pull_request_count": 4,
+    "problem_count": 0,
+    "has_current_problems": false
+  },
+  "problems": []
+}
+```
+
+To fail automation when any current red or pending head exists:
+
+```bash
+python -m agent_ci_failure_correlator audit-github \
+  --owner org \
+  --format json \
+  --fail-on-current-problem
+```
+
+Default branches are reported as scopes such as `default:main`; open pull requests are reported as `open-pr:123`. That makes it easy to separate "main is currently red", "this PR is currently red", and "only a closed PR or deleted branch has a historical failed run".
 
 ### GitHub Actions Failure Emails
 
@@ -800,6 +992,27 @@ fetched = fetch_failed_jobs_for_owners(
 )
 
 result = analyze_records(fetched.records, config=CorrelatorConfig(similarity_threshold=0.56))
+print(result.to_dict()["summary"])
+```
+
+Audit current GitHub Actions status:
+
+```python
+from agent_ci_failure_correlator import (
+    GitHubClient,
+    GitHubCurrentAuditOptions,
+    audit_current_actions,
+    render_current_audit_markdown,
+)
+
+client = GitHubClient(token="...", timeout=20)
+result = audit_current_actions(
+    ["org/api-service", "org/webapp"],
+    GitHubCurrentAuditOptions(include_open_prs=True),
+    client=client,
+)
+
+print(render_current_audit_markdown(result))
 print(result.to_dict()["summary"])
 ```
 
@@ -905,6 +1118,35 @@ jobs:
         with:
           name: ci-failure-brief
           path: ci-failure-brief.md
+```
+
+For a scheduled "are any repos still red right now?" check, run only the current-status audit:
+
+```yaml
+name: Audit Current CI Status
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * *"
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install git+https://github.com/yanqr213/agent-ci-failure-correlator.git
+      - run: |
+          python -m agent_ci_failure_correlator audit-github \
+            --owner yanqr213 \
+            --repo-name-pattern "agent|prompt|mcp" \
+            --format markdown \
+            --output current-actions.md \
+            --fail-on-current-problem
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
 Upload SARIF in GitHub Actions:

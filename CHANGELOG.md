@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0 - 2026-06-09
+
+- Added `audit-github` to report current GitHub Actions health for default branches and open pull requests.
+- Added stable JSON schema `agent-ci-failure-correlator.current-actions.v1` plus Markdown reports with `CLEAR` / `ACTION NEEDED` decisions.
+- Added Python API helpers `audit_current_actions`, `audit_current_actions_for_owners`, `render_current_audit_json`, and `render_current_audit_markdown`.
+- Added CLI gates for `--fail-on-current-problem`, `--ignore-pending`, and default-branch-only audits.
+- Expanded tests, CI smoke coverage, and Chinese/English documentation for current-status audits.
+
 ## 0.7.0 - 2026-06-09
 
 - Added GitHub owner and organization repository discovery for `fetch-github` via repeatable `--owner`.

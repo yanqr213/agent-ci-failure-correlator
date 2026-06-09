@@ -11,6 +11,13 @@ from typing import Iterable, List, Optional
 from . import __version__
 from .api import analyze_paths
 from .config import CorrelatorConfig, load_config
+from .github_audit import (
+    GitHubCurrentAuditOptions,
+    audit_current_actions,
+    audit_current_actions_for_owners,
+    render_current_audit_json,
+    render_current_audit_markdown,
+)
 from .github_fetcher import (
     GitHubClient,
     GitHubFetchOptions,
@@ -42,6 +49,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         return _init_config(args)
     if args.command == "fetch-github":
         return _fetch_github(args)
+    if args.command == "audit-github":
+        return _audit_github(args)
     if args.command == "analyze":
         return _analyze(args)
     parser.print_help(sys.stderr)
@@ -95,6 +104,28 @@ def build_parser() -> argparse.ArgumentParser:
     fetch.add_argument("--log-chars", type=int, default=20000, help="Maximum redacted log characters per job.")
     fetch.add_argument("--api-url", default="https://api.github.com", help="GitHub API base URL.")
     fetch.add_argument("--fail-on-warning", action="store_true", help="Return usage error when any repository could not be fetched.")
+
+    audit = subparsers.add_parser("audit-github", help="Audit current GitHub Actions status for default branches and open PRs.")
+    audit.add_argument("repositories", nargs="*", help="Repositories in owner/name format.")
+    audit.add_argument("--repo-file", help="Newline-delimited repository list. Lines starting with # are ignored.")
+    audit.add_argument("--owner", action="append", default=[], help="Discover repositories from a GitHub user or organization. Repeatable.")
+    audit.add_argument("--repo-name-pattern", help="Regex filter applied to discovered owner/name repositories.")
+    audit.add_argument("--include-archived", action="store_true", help="Include archived repositories discovered from --owner.")
+    audit.add_argument("--include-forks", action="store_true", help="Include forked repositories discovered from --owner.")
+    audit.add_argument("--repo-type", choices=["all", "public", "private", "forks", "sources", "member", "owner"], default="all", help="GitHub repository type filter for owner discovery.")
+    audit.add_argument("--repo-limit", type=int, default=100, help="Maximum repositories to discover per owner.")
+    audit.add_argument("--repo-pages", type=int, default=3, help="Maximum owner repository pages to inspect.")
+    audit.add_argument("-o", "--output", help="Output report path. Defaults to stdout.")
+    audit.add_argument("--format", choices=["markdown", "json"], default="markdown", help="Current-status audit output format.")
+    audit.add_argument("--token-env", default="GITHUB_TOKEN,GH_TOKEN", help="Comma-separated environment variables to read a GitHub token from.")
+    audit.add_argument("--api-url", default="https://api.github.com", help="GitHub API base URL.")
+    audit.add_argument("--no-open-prs", action="store_true", help="Only audit default-branch workflow heads.")
+    audit.add_argument("--ignore-pending", action="store_true", help="Do not treat queued/in-progress workflow heads as current problems.")
+    audit.add_argument("--run-limit", type=int, default=100, help="Maximum recent workflow runs to inspect per scope.")
+    audit.add_argument("--pr-limit", type=int, default=100, help="Maximum open pull requests to inspect per repository.")
+    audit.add_argument("--pr-pages", type=int, default=1, help="Maximum pull-request pages to inspect per repository.")
+    audit.add_argument("--fail-on-current-problem", action="store_true", help="Exit 1 when any current workflow head is failing or pending.")
+    audit.add_argument("--fail-on-warning", action="store_true", help="Return usage error when any repository could not be audited.")
 
     subparsers.add_parser("version", help="Print package version.")
     return parser
@@ -223,6 +254,58 @@ def _fetch_github(args: argparse.Namespace) -> int:
         print(f"warning: {warning}", file=sys.stderr)
     if args.fail_on_warning and result.warnings:
         return EXIT_USAGE_ERROR
+    return EXIT_SUCCESS
+
+
+def _audit_github(args: argparse.Namespace) -> int:
+    try:
+        repositories = read_repositories(args.repositories, args.repo_file or "")
+        owners = [owner.strip() for owner in args.owner if owner and owner.strip()]
+        if not repositories and not owners:
+            raise ValueError("At least one repository, --repo-file entry, or --owner is required.")
+        options = GitHubCurrentAuditOptions(
+            include_open_prs=not args.no_open_prs,
+            per_repo_run_limit=max(1, args.run_limit),
+            pr_limit=max(1, args.pr_limit),
+            max_pr_pages=max(1, args.pr_pages),
+            include_pending=not args.ignore_pending,
+        )
+        client = _github_client_factory(token=token_from_environment(args.token_env), base_url=args.api_url)
+        if owners:
+            discovery = GitHubRepositoryDiscoveryOptions(
+                per_owner_limit=max(1, args.repo_limit),
+                max_pages=max(1, args.repo_pages),
+                repo_type=args.repo_type,
+                include_archived=args.include_archived,
+                include_forks=args.include_forks,
+                name_pattern=args.repo_name_pattern or "",
+            )
+            result = audit_current_actions_for_owners(owners, options, discovery, client=client)
+            discovered = {repo.lower() for repo in result.discovered.repositories} if result.discovered else set()
+            remaining_repositories = [repo for repo in repositories if repo.lower() not in discovered]
+            if remaining_repositories:
+                explicit_result = audit_current_actions(remaining_repositories, options, client=client)
+                result.repositories.extend(explicit_result.repositories)
+                result.warnings.extend(explicit_result.warnings)
+        else:
+            result = audit_current_actions(repositories, options, client=client)
+    except Exception as exc:
+        print(f"agent-ci-failure-correlator: {exc}", file=sys.stderr)
+        return EXIT_USAGE_ERROR
+
+    output = render_current_audit_json(result) if args.format == "json" else render_current_audit_markdown(result)
+    if args.output:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(output, encoding="utf-8")
+    else:
+        print(output, end="")
+    for warning in result.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+    if args.fail_on_warning and result.warnings:
+        return EXIT_USAGE_ERROR
+    if args.fail_on_current_problem and result.problem_heads:
+        return EXIT_FAILURES_FOUND
     return EXIT_SUCCESS
 
 

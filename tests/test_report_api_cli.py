@@ -7,6 +7,7 @@ from agent_ci_failure_correlator.api import analyze, analyze_paths, analyze_reco
 import agent_ci_failure_correlator.cli as cli_module
 from agent_ci_failure_correlator.cli import (
     EXIT_CROSS_REPOSITORY_REPEATS,
+    EXIT_FAILURES_FOUND,
     EXIT_SUCCESS,
     EXIT_USAGE_ERROR,
     main,
@@ -304,6 +305,167 @@ class ReportApiCliTests(unittest.TestCase):
                 rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
                 self.assertEqual({"org/api", "extra/repo"}, {row["repository"] for row in rows})
                 self.assertEqual(["org/api", "extra/repo"], fake_client.requested_repositories)
+        finally:
+            cli_module._github_client_factory = original
+
+    def test_cli_audit_github_writes_current_status_json(self):
+        class FakeClient:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+            def get_repository(self, repository):
+                return {"default_branch": "main"}
+
+            def list_current_workflow_runs(
+                self,
+                repository,
+                *,
+                page,
+                per_page,
+                branch="",
+                head_sha="",
+                exclude_pull_requests=False,
+            ):
+                if head_sha == "badsha":
+                    return [
+                        {
+                            "id": 99,
+                            "workflow_id": 1,
+                            "name": "CI",
+                            "status": "completed",
+                            "conclusion": "failure",
+                            "head_branch": "feature",
+                            "head_sha": "badsha",
+                            "html_url": "https://github.com/org/api/actions/runs/99",
+                        }
+                    ]
+                return [
+                    {
+                        "id": 1,
+                        "workflow_id": 1,
+                        "name": "CI",
+                        "status": "completed",
+                        "conclusion": "success",
+                        "head_branch": "main",
+                        "head_sha": "goodsha",
+                        "html_url": "https://github.com/org/api/actions/runs/1",
+                    }
+                ]
+
+            def list_pull_requests(self, repository, *, page, per_page, state="open"):
+                return [
+                    {
+                        "number": 3,
+                        "title": "Failing change",
+                        "html_url": "https://github.com/org/api/pull/3",
+                        "head": {"ref": "feature", "sha": "badsha"},
+                        "base": {"ref": "main"},
+                    }
+                ]
+
+        original = cli_module._github_client_factory
+        cli_module._github_client_factory = FakeClient
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp) / "current.json"
+                code = main(["audit-github", "org/api", "--format", "json", "--output", str(output)])
+                self.assertEqual(code, EXIT_SUCCESS)
+                payload = json.loads(output.read_text(encoding="utf-8"))
+                self.assertEqual("agent-ci-failure-correlator.current-actions.v1", payload["schema"])
+                self.assertEqual(1, payload["summary"]["problem_count"])
+                self.assertEqual("open-pr:3", payload["problems"][0]["scope"])
+        finally:
+            cli_module._github_client_factory = original
+
+    def test_cli_audit_github_fail_on_current_problem(self):
+        class FakeClient:
+            def __init__(self, **kwargs):
+                pass
+
+            def get_repository(self, repository):
+                return {"default_branch": "main"}
+
+            def list_current_workflow_runs(
+                self,
+                repository,
+                *,
+                page,
+                per_page,
+                branch="",
+                head_sha="",
+                exclude_pull_requests=False,
+            ):
+                return [
+                    {
+                        "id": 9,
+                        "workflow_id": 1,
+                        "name": "CI",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "head_branch": "main",
+                        "head_sha": "badsha",
+                    }
+                ]
+
+            def list_pull_requests(self, repository, *, page, per_page, state="open"):
+                return []
+
+        original = cli_module._github_client_factory
+        cli_module._github_client_factory = FakeClient
+        try:
+            code = main(["audit-github", "org/api", "--no-open-prs", "--fail-on-current-problem"])
+            self.assertEqual(code, EXIT_FAILURES_FOUND)
+        finally:
+            cli_module._github_client_factory = original
+
+    def test_cli_audit_github_discovers_owner_repositories(self):
+        class FakeClient:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+            def list_owner_repositories(self, owner, *, page, per_page, repo_type="all"):
+                if page > 1:
+                    return []
+                return [{"full_name": f"{owner}/api", "archived": False, "fork": False}]
+
+            def get_repository(self, repository):
+                return {"default_branch": "main"}
+
+            def list_current_workflow_runs(
+                self,
+                repository,
+                *,
+                page,
+                per_page,
+                branch="",
+                head_sha="",
+                exclude_pull_requests=False,
+            ):
+                return [
+                    {
+                        "id": 1,
+                        "workflow_id": 1,
+                        "name": "CI",
+                        "status": "completed",
+                        "conclusion": "success",
+                        "head_branch": branch or "main",
+                        "head_sha": "goodsha",
+                    }
+                ]
+
+            def list_pull_requests(self, repository, *, page, per_page, state="open"):
+                return []
+
+        original = cli_module._github_client_factory
+        cli_module._github_client_factory = FakeClient
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp) / "current.md"
+                code = main(["audit-github", "--owner", "org", "--output", str(output)])
+                self.assertEqual(code, EXIT_SUCCESS)
+                text = output.read_text(encoding="utf-8")
+                self.assertIn("CLEAR", text)
+                self.assertIn("Repositories scanned: 1", text)
         finally:
             cli_module._github_client_factory = original
 
