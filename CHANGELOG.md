@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.0 - 2026-06-09
+
+- Added `audit-inbox --format action-plan` to turn CI failure inbox audits into issue/PR-ready repair plans.
+- Action plans now separate current repair work, unknown events, archive candidates, audit warnings, and copy-ready agent prompts.
+- Exported `render_inbox_action_plan_markdown` in the Python API.
+- Expanded tests, CI smoke coverage, and Chinese/English README usage notes for inbox action plans.
+
 ## 0.9.0 - 2026-06-09
 
 - Added `audit-inbox` to parse exported CI failure emails/logs, extract referenced repositories, and classify historical failures as current, stale, or unknown against live GitHub Actions heads.

@@ -177,6 +177,14 @@ python -m agent_ci_failure_correlator audit-inbox exported-failure-mails \
   --output inbox-audit.md
 ```
 
+生成可直接贴到 issue、PR 或发给 Codex/Claude Code 的行动计划：
+
+```bash
+python -m agent_ci_failure_correlator audit-inbox exported-failure-mails \
+  --format action-plan \
+  --output inbox-action-plan.md
+```
+
 输出 JSON，并在仍有匹配当前红灯时失败：
 
 ```bash
@@ -223,12 +231,12 @@ python -m agent_ci_failure_correlator audit-inbox exported-failure-mails \
 `audit-inbox` 常用参数：
 
 - `inputs`：本地保存的 `.eml`、`.txt`、`.log`、`.json`、`.jsonl`、JUnit XML 文件或目录。
-- `--format markdown|json`：Markdown 用于人工收件箱 triage，JSON 使用稳定 schema `agent-ci-failure-correlator.inbox-audit.v1`。
+- `--format markdown|json|action-plan`：Markdown 用于人工收件箱 triage，JSON 使用稳定 schema `agent-ci-failure-correlator.inbox-audit.v1`，`action-plan` 生成 issue/PR 友好的当前修复、未知事件、归档候选和 agent prompt。
 - `--no-open-prs` / `--ignore-pending`：与 `audit-github` 相同，控制审计范围和 pending 语义。
 - `--fail-on-current-problem`：只有当历史邮件能匹配到当前仍失败或 pending 的 workflow/branch 时返回退出码 `1`。
 - `--fail-on-warning`：解析不到仓库、GitHub API rate limit、权限不足等 warning 时返回退出码 `3`。
 
-推荐处理顺序：收到大量 CI 失败邮件时，如果手里有邮件或日志目录，先运行 `audit-inbox`。如果结果是 `CLEAR`，这些邮件多半是历史失败或已被后续提交修复；如果是 `ACTION NEEDED`，再运行 `fetch-github` + `analyze` 聚类当前仍需要修复的日志；如果只有 owner/repo 范围而没有邮件目录，先用 `audit-github` 看当前红灯。
+推荐处理顺序：收到大量 CI 失败邮件时，如果手里有邮件或日志目录，先运行 `audit-inbox --format action-plan`。如果结果是 `CLEAR`，这些邮件多半是历史失败或已被后续提交修复；如果是 `ACTION NEEDED`，行动计划会列出当前修复仓库、run 链接、归档候选和可复制给 agent 的 prompt，然后再运行 `fetch-github` + `analyze --format queue` 聚类当前仍需要修复的日志；如果只有 owner/repo 范围而没有邮件目录，先用 `audit-github` 看当前红灯。
 
 ### 从 GitHub 抓取失败记录
 
@@ -852,6 +860,14 @@ python -m agent_ci_failure_correlator audit-inbox exported-failure-mails \
   --output inbox-audit.md
 ```
 
+Generate an issue-ready action plan with repair work, archive candidates, unknown events, and agent prompts:
+
+```bash
+python -m agent_ci_failure_correlator audit-inbox exported-failure-mails \
+  --format action-plan \
+  --output inbox-action-plan.md
+```
+
 Emit JSON and fail when a historical inbox item still maps to a current red or pending head:
 
 ```bash
@@ -898,12 +914,12 @@ Useful `audit-github` flags:
 Useful `audit-inbox` flags:
 
 - `inputs`: saved `.eml`, `.txt`, `.log`, `.json`, `.jsonl`, JUnit XML files, or directories.
-- `--format markdown|json`: Markdown is for human inbox triage; JSON uses the stable `agent-ci-failure-correlator.inbox-audit.v1` schema.
+- `--format markdown|json|action-plan`: Markdown is for human inbox triage; JSON uses the stable `agent-ci-failure-correlator.inbox-audit.v1` schema; `action-plan` creates issue/PR-ready current repair work, unknown events, archive candidates, and agent prompts.
 - `--no-open-prs` / `--ignore-pending`: same semantics as `audit-github`.
 - `--fail-on-current-problem`: exit `1` only when an inbox event matches a current failing or pending workflow/branch.
 - `--fail-on-warning`: exit `3` for missing repository metadata, API rate limits, permission issues, or other audit warnings.
 
-Recommended workflow: when many CI failure emails arrive and you have the saved email/log directory, run `audit-inbox` first. If it returns `CLEAR`, the messages are probably historical failures already fixed by later commits or reruns. If it returns `ACTION NEEDED`, run `fetch-github` and `analyze` to cluster the current logs that still need repair. If you only know an owner or repository list, use `audit-github` first.
+Recommended workflow: when many CI failure emails arrive and you have the saved email/log directory, run `audit-inbox --format action-plan` first. If it returns `CLEAR`, the messages are probably historical failures already fixed by later commits or reruns. If it returns `ACTION NEEDED`, the action plan lists current repair repositories, run links, archive candidates, and copy-ready agent prompts; then run `fetch-github` and `analyze --format queue` to cluster the live logs that still need repair. If you only know an owner or repository list, use `audit-github` first.
 
 ### Fetch From GitHub
 

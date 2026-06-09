@@ -28,7 +28,12 @@ from .github_fetcher import (
     render_jsonl,
     token_from_environment,
 )
-from .inbox_audit import audit_inbox_paths, render_inbox_audit_json, render_inbox_audit_markdown
+from .inbox_audit import (
+    audit_inbox_paths,
+    render_inbox_action_plan_markdown,
+    render_inbox_audit_json,
+    render_inbox_audit_markdown,
+)
 from .models import AnalysisResult
 from .report import render_brief, render_json, render_markdown, render_sarif
 from .triage import render_queue_json, render_queue_markdown
@@ -137,7 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
     inbox.add_argument("inputs", nargs="+", help="Input files or directories containing exported failure emails, logs, JSON, or JUnit.")
     inbox.add_argument("-c", "--config", help="Path to JSON correlation configuration file.")
     inbox.add_argument("-o", "--output", help="Output report path. Defaults to stdout.")
-    inbox.add_argument("--format", choices=["markdown", "json"], default="markdown", help="Inbox audit output format.")
+    inbox.add_argument("--format", choices=["markdown", "json", "action-plan"], default="markdown", help="Inbox audit output format.")
     inbox.add_argument("--token-env", default="GITHUB_TOKEN,GH_TOKEN", help="Comma-separated environment variables to read a GitHub token from.")
     inbox.add_argument("--api-url", default="https://api.github.com", help="GitHub API base URL.")
     inbox.add_argument("--no-open-prs", action="store_true", help="Only audit default-branch workflow heads.")
@@ -350,7 +355,12 @@ def _audit_inbox(args: argparse.Namespace) -> int:
         print(f"agent-ci-failure-correlator: {exc}", file=sys.stderr)
         return EXIT_USAGE_ERROR
 
-    output = render_inbox_audit_json(result) if args.format == "json" else render_inbox_audit_markdown(result)
+    if args.format == "json":
+        output = render_inbox_audit_json(result)
+    elif args.format == "action-plan":
+        output = render_inbox_action_plan_markdown(result)
+    else:
+        output = render_inbox_audit_markdown(result)
     if args.output:
         output_path = Path(args.output)
         output_path.parent.mkdir(parents=True, exist_ok=True)

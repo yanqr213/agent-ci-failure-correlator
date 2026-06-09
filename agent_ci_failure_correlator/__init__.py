@@ -24,6 +24,7 @@ from .inbox_audit import (
     InboxAuditResult,
     InboxEventAudit,
     audit_inbox_paths,
+    render_inbox_action_plan_markdown,
     render_inbox_audit_json,
     render_inbox_audit_markdown,
 )
@@ -56,10 +57,11 @@ __all__ = [
     "fetch_failed_jobs_for_owners",
     "render_current_audit_json",
     "render_current_audit_markdown",
+    "render_inbox_action_plan_markdown",
     "render_inbox_audit_json",
     "render_inbox_audit_markdown",
     "render_queue_json",
     "render_queue_markdown",
 ]
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"

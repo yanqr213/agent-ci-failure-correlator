@@ -238,6 +238,37 @@ def render_inbox_audit_markdown(result: InboxAuditResult) -> str:
     return "\n".join(lines)
 
 
+def render_inbox_action_plan_markdown(result: InboxAuditResult) -> str:
+    """Render an issue-ready action plan from an inbox audit."""
+
+    data = result.to_dict()
+    summary = data["summary"]
+    decision = _decision(result)
+    lines = [
+        "# CI Failure Inbox Action Plan",
+        "",
+        f"- Generated: {result.generated_at}",
+        f"- Decision: {decision}",
+        f"- Historical failure events: {summary['event_count']}",
+        f"- Current events needing action: {summary['current_event_count']}",
+        f"- Likely stale events to archive: {summary['stale_event_count']}",
+        f"- Unknown events needing review: {summary['unknown_event_count']}",
+        f"- Cross-repository clusters in inbox: {summary['cross_repository_cluster_count']}",
+        "",
+    ]
+    _action_plan_next_moves(lines, result, decision)
+    _action_plan_current(lines, result)
+    _action_plan_unknown(lines, result)
+    _action_plan_archive(lines, result)
+    _action_plan_agent_prompts(lines, result)
+    if result.warnings:
+        lines.extend(["## Audit Warnings", ""])
+        for warning in result.warnings:
+            lines.append(f"- {warning}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _repositories_from_events(events: Sequence[FailureEvent]) -> List[str]:
     seen = set()
     repositories: List[str] = []
@@ -340,3 +371,141 @@ def _problem_heads_for_events(events: Sequence[InboxEventAudit]) -> List[Current
             seen.add(key)
             heads.append(head)
     return heads
+
+
+def _decision(result: InboxAuditResult) -> str:
+    if result.current_events:
+        return "ACTION NEEDED"
+    if result.unknown_events or result.warnings:
+        return "REVIEW NEEDED"
+    return "CLEAR"
+
+
+def _action_plan_next_moves(lines: List[str], result: InboxAuditResult, decision: str) -> None:
+    lines.extend(["## Next Moves", ""])
+    if decision == "ACTION NEEDED":
+        lines.extend(
+            [
+                "- Open or update one tracking issue for the current problem repositories below.",
+                "- Run `fetch-github` for those repositories to collect fresh logs, then run `analyze --format queue` to build repair tasks.",
+                "- Archive stale emails after confirming the scanned owner/repository scope.",
+            ]
+        )
+    elif decision == "REVIEW NEEDED":
+        lines.extend(
+            [
+                "- Resolve unknown repository metadata, API warnings, authentication, or rate-limit issues first.",
+                "- Re-run `audit-inbox` after the scope can be checked cleanly.",
+                "- Do not archive unknown events until they are matched to a repository or deliberately dismissed.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "- Archive or label the scanned failure emails as historical noise.",
+                "- Keep the report for incident history if the failures were customer-visible or repeated.",
+                "- No live CI repair work is required for the audited scope.",
+            ]
+        )
+    lines.append("")
+
+
+def _action_plan_current(lines: List[str], result: InboxAuditResult) -> None:
+    lines.extend(["## Current Repair Work", ""])
+    if not result.current_events:
+        lines.extend(["No inbox events matched current failing or pending workflow heads.", ""])
+        return
+    for repository, events in _events_by_repository(result.current_events).items():
+        labels = _label_summary(events)
+        heads = _problem_heads_for_events(events)
+        lines.append(f"### {repository}")
+        lines.append("")
+        lines.append(f"- Inbox events still current: `{len(events)}`")
+        lines.append(f"- Current problem heads: `{len(heads)}`")
+        lines.append(f"- Root-cause labels: {labels}")
+        if heads:
+            lines.append("- Runs:")
+            for head in heads[:6]:
+                state = head.conclusion or head.status or "unknown"
+                run = f"[{head.run_id}]({head.url})" if head.run_id and head.url else (head.url or head.run_id or "-")
+                lines.append(
+                    f"  - `{head.scope}` `{head.workflow or 'unknown workflow'}` {state} "
+                    f"on `{head.head_branch or 'unknown'}` `{head.head_sha[:12]}` {run}"
+                )
+        lines.append("- Representative inbox evidence:")
+        for event in events[:3]:
+            lines.append(f"  - `{event.workflow or 'unknown workflow'}` / `{event.job_name or 'unknown job'}`: {_first_summary_line(event)}")
+        lines.append("")
+
+
+def _action_plan_unknown(lines: List[str], result: InboxAuditResult) -> None:
+    lines.extend(["## Unknown Events To Review", ""])
+    if not result.unknown_events:
+        lines.extend(["No unknown events were found.", ""])
+        return
+    for event in result.unknown_events[:20]:
+        repository = event.repository or "unknown repository"
+        lines.append(f"- `{repository}` from `{event.source_path}`: {event.reason}")
+        if event.summary:
+            lines.append(f"  - {_first_summary_line(event)}")
+    if len(result.unknown_events) > 20:
+        lines.append(f"- ... {len(result.unknown_events) - 20} more unknown events")
+    lines.append("")
+
+
+def _action_plan_archive(lines: List[str], result: InboxAuditResult) -> None:
+    lines.extend(["## Archive Candidates", ""])
+    if not result.stale_events:
+        lines.extend(["No stale inbox events were identified.", ""])
+        return
+    for repository, events in _events_by_repository(result.stale_events).items():
+        lines.append(f"- **{repository}**: archive `{len(events)}` historical failure email(s); current audited heads are clear.")
+    lines.append("")
+
+
+def _action_plan_agent_prompts(lines: List[str], result: InboxAuditResult) -> None:
+    lines.extend(["## Agent Prompts", ""])
+    if not result.current_events:
+        lines.extend(["No repair prompts are needed because no current inbox failures matched live workflow heads.", ""])
+        return
+    for repository, events in _events_by_repository(result.current_events).items():
+        heads = _problem_heads_for_events(events)
+        labels = _label_summary(events)
+        run_lines = [head.url for head in heads if head.url][:5]
+        lines.extend(
+            [
+                f"### {repository}",
+                "",
+                "```text",
+                f"You are assigned to clear current CI failures for {repository}.",
+                "Use the inbox audit only as triage context; inspect the live workflow run and repository before editing.",
+                f"Root-cause labels seen in the inbox: {labels}.",
+                f"Historical inbox events still matching current heads: {len(events)}.",
+                "Representative failure:",
+                _first_summary_line(events[0]),
+            ]
+        )
+        if run_lines:
+            lines.append("Current run links:")
+            for link in run_lines:
+                lines.append(f"- {link}")
+        lines.extend(
+            [
+                "Suggested workflow:",
+                "1. Reproduce or inspect the current failing workflow head.",
+                "2. Apply the smallest repository-scoped or shared fix.",
+                "3. Run focused tests locally or explain why live CI is the verifier.",
+                "4. Report the commit, checks run, and any remaining risks.",
+                "```",
+                "",
+            ]
+        )
+
+
+def _label_summary(events: Sequence[InboxEventAudit]) -> str:
+    labels = sorted({label for event in events for label in event.root_cause_labels})
+    return ", ".join(f"`{label}`" for label in labels) if labels else "`unknown`"
+
+
+def _first_summary_line(event: InboxEventAudit) -> str:
+    return (event.summary.splitlines()[0] if event.summary else event.reason)[:220]

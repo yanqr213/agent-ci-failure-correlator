@@ -6,6 +6,7 @@ from pathlib import Path
 from agent_ci_failure_correlator.github_audit import GitHubCurrentAuditOptions
 from agent_ci_failure_correlator.inbox_audit import (
     audit_inbox_paths,
+    render_inbox_action_plan_markdown,
     render_inbox_audit_json,
     render_inbox_audit_markdown,
 )
@@ -149,6 +150,76 @@ class InboxAuditTests(unittest.TestCase):
         self.assertIn("# CI Failure Inbox Audit", markdown)
         self.assertIn("Decision: CLEAR", markdown)
         self.assertIn("Likely Stale Failure Emails", markdown)
+
+    def test_render_inbox_action_plan_prioritizes_current_work(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            current = root / "current.eml"
+            stale = root / "stale.eml"
+            current.write_text(
+                "\n".join(
+                    [
+                        "Subject: [org/current] Run failed: CI - main",
+                        "Workflow: CI",
+                        "Job: tests",
+                        "Branch: main",
+                        "Run URL: https://github.com/org/current/actions/runs/9",
+                        "",
+                        "ModuleNotFoundError: No module named shared_auth",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            stale.write_text(
+                "\n".join(
+                    [
+                        "Subject: [org/stale] Run failed: CI - main",
+                        "Workflow: CI",
+                        "Job: tests",
+                        "Branch: main",
+                        "Run URL: https://github.com/org/stale/actions/runs/8",
+                        "",
+                        "ModuleNotFoundError: No module named shared_auth",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            result = audit_inbox_paths([str(root)], client=FakeInboxAuditClient())
+            plan = render_inbox_action_plan_markdown(result)
+
+        self.assertIn("# CI Failure Inbox Action Plan", plan)
+        self.assertIn("Decision: ACTION NEEDED", plan)
+        self.assertIn("## Current Repair Work", plan)
+        self.assertIn("org/current", plan)
+        self.assertIn("## Archive Candidates", plan)
+        self.assertIn("org/stale", plan)
+        self.assertIn("## Agent Prompts", plan)
+        self.assertIn("You are assigned to clear current CI failures for org/current", plan)
+
+    def test_render_inbox_action_plan_clear_has_no_repair_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "stale.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "repository": "org/stale",
+                        "workflow": "CI",
+                        "job_name": "tests",
+                        "log": "ModuleNotFoundError: No module named shared_auth",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = audit_inbox_paths(
+                [str(path)],
+                current_options=GitHubCurrentAuditOptions(include_open_prs=False),
+                client=FakeInboxAuditClient(),
+            )
+            plan = render_inbox_action_plan_markdown(result)
+
+        self.assertIn("Decision: CLEAR", plan)
+        self.assertIn("No repair prompts are needed", plan)
+        self.assertIn("archive `1` historical failure email", plan)
 
     def test_audit_inbox_does_not_mark_unmatched_workflow_as_current(self):
         class WorkflowMismatchClient(FakeInboxAuditClient):
