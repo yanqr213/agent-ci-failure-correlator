@@ -140,7 +140,8 @@ def _parse_email(path: Path, config: CorrelatorConfig) -> FailureEvent:
     sender = str(message.get("from") or "")
     timestamp = str(message.get("date") or "")
     body = _message_text(message)
-    text = "\n".join(part for part in [f"Subject: {subject}" if subject else "", body] if part)
+    notification_headers = _notification_header_lines(message)
+    text = "\n".join(part for part in [f"Subject: {subject}" if subject else "", *notification_headers, body] if part)
     source, metadata = _github_actions_email_source(text, path)
     metadata.update(
         {
@@ -150,6 +151,16 @@ def _parse_email(path: Path, config: CorrelatorConfig) -> FailureEvent:
     )
     analysis_text = _strip_github_notification_metadata(text) if source.format == "github-actions-email" else text
     return _event_from_text(analysis_text, path, config, source, timestamp=timestamp, metadata={key: value for key, value in metadata.items() if value})
+
+
+def _notification_header_lines(message: Any) -> List[str]:
+    fields = ["Workflow", "Job", "Failed job", "Branch", "Ref", "Commit", "SHA", "Run URL", "Failing step"]
+    lines = []
+    for field in fields:
+        value = str(message.get(field) or "").strip()
+        if value:
+            lines.append(f"{field}: {value}")
+    return lines
 
 
 def _event_from_plain_text_file(path: Path, config: CorrelatorConfig) -> FailureEvent:
@@ -482,9 +493,10 @@ def _github_actions_email_source(text: str, path: Path) -> Tuple[SourceRef, Dict
         subject_match = GITHUB_SUBJECT_REPO_RE.search(subject)
         if subject_match:
             repository = subject_match.group(1)
-    workflow = _email_field(text, "Workflow") or _workflow_from_subject(subject)
+    subject_workflow, subject_branch = _workflow_branch_from_subject(subject)
+    workflow = _email_field(text, "Workflow") or subject_workflow
     job_name = _email_field(text, "Job") or _email_field(text, "Failed job")
-    branch = _email_field(text, "Branch") or _email_field(text, "Ref")
+    branch = _email_field(text, "Branch") or _email_field(text, "Ref") or subject_branch
     commit = _email_field(text, "Commit") or _email_field(text, "SHA")
     if branch:
         metadata["branch"] = branch
@@ -529,11 +541,21 @@ def _email_field(text: str, field: str) -> str:
 
 
 def _workflow_from_subject(subject: str) -> str:
+    return _workflow_branch_from_subject(subject)[0]
+
+
+def _workflow_branch_from_subject(subject: str) -> Tuple[str, str]:
     match = GITHUB_RUN_SUBJECT_RE.search(subject)
     if not match:
-        return ""
+        return "", ""
     workflow = match.group(2).strip()
-    return workflow.rstrip(" .")
+    workflow = workflow.rstrip(" .")
+    branch = ""
+    branch_match = re.match(r"(.+?)\s+-\s+([A-Za-z0-9_.\-/]+)(?:\s+\([^)]+\))?$", workflow)
+    if branch_match:
+        workflow = branch_match.group(1).strip()
+        branch = branch_match.group(2).strip()
+    return workflow, branch
 
 
 def _int_or_none(value: Any) -> Optional[int]:

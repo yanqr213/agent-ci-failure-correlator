@@ -469,6 +469,78 @@ class ReportApiCliTests(unittest.TestCase):
         finally:
             cli_module._github_client_factory = original
 
+    def test_cli_audit_inbox_writes_json_and_fails_on_current_problem(self):
+        class FakeClient:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+            def get_repository(self, repository):
+                return {"default_branch": "main"}
+
+            def list_current_workflow_runs(
+                self,
+                repository,
+                *,
+                page,
+                per_page,
+                branch="",
+                head_sha="",
+                exclude_pull_requests=False,
+            ):
+                return [
+                    {
+                        "id": 9,
+                        "workflow_id": 1,
+                        "name": "CI",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "head_branch": "main",
+                        "head_sha": "badsha",
+                        "html_url": f"https://github.com/{repository}/actions/runs/9",
+                    }
+                ]
+
+            def list_pull_requests(self, repository, *, page, per_page, state="open"):
+                return []
+
+        original = cli_module._github_client_factory
+        cli_module._github_client_factory = FakeClient
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                inbox = root / "failure.eml"
+                output = root / "inbox-audit.json"
+                inbox.write_text(
+                    "\n".join(
+                        [
+                            "Subject: [org/api] Run failed: CI - main",
+                            "Workflow: CI",
+                            "Job: tests",
+                            "Run URL: https://github.com/org/api/actions/runs/7",
+                            "",
+                            "ModuleNotFoundError: No module named shared_auth",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                code = main(
+                    [
+                        "audit-inbox",
+                        str(inbox),
+                        "--format",
+                        "json",
+                        "--output",
+                        str(output),
+                        "--fail-on-current-problem",
+                    ]
+                )
+                self.assertEqual(code, EXIT_FAILURES_FOUND)
+                payload = json.loads(output.read_text(encoding="utf-8"))
+                self.assertEqual("agent-ci-failure-correlator.inbox-audit.v1", payload["schema"])
+                self.assertEqual(1, payload["summary"]["current_event_count"])
+        finally:
+            cli_module._github_client_factory = original
+
 
 if __name__ == "__main__":
     unittest.main()

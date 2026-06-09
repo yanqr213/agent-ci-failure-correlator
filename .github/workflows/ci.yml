@@ -37,6 +37,7 @@ jobs:
           python -m agent_ci_failure_correlator fetch-github --help
           python -m agent_ci_failure_correlator fetch-github --owner example --repo-name-pattern "api|web" --no-logs --help
           python -m agent_ci_failure_correlator audit-github --help
+          python -m agent_ci_failure_correlator audit-inbox --help
           python -m agent_ci_failure_correlator analyze examples/inputs --format json --output report.json
           python -m agent_ci_failure_correlator analyze examples/inputs --format brief --output report-brief.md
           python -m agent_ci_failure_correlator analyze examples/inputs --format queue --output repair-queue.md --max-tasks 3

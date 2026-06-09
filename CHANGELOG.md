@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.0 - 2026-06-09
+
+- Added `audit-inbox` to parse exported CI failure emails/logs, extract referenced repositories, and classify historical failures as current, stale, or unknown against live GitHub Actions heads.
+- Added stable JSON schema `agent-ci-failure-correlator.inbox-audit.v1` and Markdown reports with `ACTION NEEDED`, `REVIEW NEEDED`, and `CLEAR` decisions.
+- Added Python API helpers `audit_inbox_paths`, `render_inbox_audit_json`, `render_inbox_audit_markdown`, `InboxAuditResult`, and `InboxEventAudit`.
+- Improved `.eml` parsing for GitHub notification fields stored as mail headers, including Workflow, Branch, Job, and Run URL.
+- Added workflow/branch-aware matching so unrelated current failures in the same repository are reported as review-needed instead of false current matches.
+
 ## 0.8.0 - 2026-06-09
 
 - Added `audit-github` to report current GitHub Actions health for default branches and open pull requests.

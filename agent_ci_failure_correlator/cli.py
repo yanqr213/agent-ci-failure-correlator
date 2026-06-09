@@ -28,6 +28,7 @@ from .github_fetcher import (
     render_jsonl,
     token_from_environment,
 )
+from .inbox_audit import audit_inbox_paths, render_inbox_audit_json, render_inbox_audit_markdown
 from .models import AnalysisResult
 from .report import render_brief, render_json, render_markdown, render_sarif
 from .triage import render_queue_json, render_queue_markdown
@@ -51,6 +52,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         return _fetch_github(args)
     if args.command == "audit-github":
         return _audit_github(args)
+    if args.command == "audit-inbox":
+        return _audit_inbox(args)
     if args.command == "analyze":
         return _analyze(args)
     parser.print_help(sys.stderr)
@@ -126,6 +129,24 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--pr-pages", type=int, default=1, help="Maximum pull-request pages to inspect per repository.")
     audit.add_argument("--fail-on-current-problem", action="store_true", help="Exit 1 when any current workflow head is failing or pending.")
     audit.add_argument("--fail-on-warning", action="store_true", help="Return usage error when any repository could not be audited.")
+
+    inbox = subparsers.add_parser(
+        "audit-inbox",
+        help="Parse exported CI failure emails/logs, then check whether referenced repositories are still red now.",
+    )
+    inbox.add_argument("inputs", nargs="+", help="Input files or directories containing exported failure emails, logs, JSON, or JUnit.")
+    inbox.add_argument("-c", "--config", help="Path to JSON correlation configuration file.")
+    inbox.add_argument("-o", "--output", help="Output report path. Defaults to stdout.")
+    inbox.add_argument("--format", choices=["markdown", "json"], default="markdown", help="Inbox audit output format.")
+    inbox.add_argument("--token-env", default="GITHUB_TOKEN,GH_TOKEN", help="Comma-separated environment variables to read a GitHub token from.")
+    inbox.add_argument("--api-url", default="https://api.github.com", help="GitHub API base URL.")
+    inbox.add_argument("--no-open-prs", action="store_true", help="Only audit default-branch workflow heads.")
+    inbox.add_argument("--ignore-pending", action="store_true", help="Do not treat queued/in-progress workflow heads as current problems.")
+    inbox.add_argument("--run-limit", type=int, default=100, help="Maximum recent workflow runs to inspect per repository.")
+    inbox.add_argument("--pr-limit", type=int, default=100, help="Maximum open pull requests to inspect per repository.")
+    inbox.add_argument("--pr-pages", type=int, default=1, help="Maximum pull-request pages to inspect per repository.")
+    inbox.add_argument("--fail-on-current-problem", action="store_true", help="Exit 1 when any inbox event maps to a current problem head.")
+    inbox.add_argument("--fail-on-warning", action="store_true", help="Return usage error when parsing or auditing produced warnings.")
 
     subparsers.add_parser("version", help="Print package version.")
     return parser
@@ -305,6 +326,42 @@ def _audit_github(args: argparse.Namespace) -> int:
     if args.fail_on_warning and result.warnings:
         return EXIT_USAGE_ERROR
     if args.fail_on_current_problem and result.problem_heads:
+        return EXIT_FAILURES_FOUND
+    return EXIT_SUCCESS
+
+
+def _audit_inbox(args: argparse.Namespace) -> int:
+    try:
+        options = GitHubCurrentAuditOptions(
+            include_open_prs=not args.no_open_prs,
+            per_repo_run_limit=max(1, args.run_limit),
+            pr_limit=max(1, args.pr_limit),
+            max_pr_pages=max(1, args.pr_pages),
+            include_pending=not args.ignore_pending,
+        )
+        client = _github_client_factory(token=token_from_environment(args.token_env), base_url=args.api_url)
+        result = audit_inbox_paths(
+            args.inputs,
+            config_path=args.config,
+            current_options=options,
+            client=client,
+        )
+    except Exception as exc:
+        print(f"agent-ci-failure-correlator: {exc}", file=sys.stderr)
+        return EXIT_USAGE_ERROR
+
+    output = render_inbox_audit_json(result) if args.format == "json" else render_inbox_audit_markdown(result)
+    if args.output:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(output, encoding="utf-8")
+    else:
+        print(output, end="")
+    for warning in result.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+    if args.fail_on_warning and result.warnings:
+        return EXIT_USAGE_ERROR
+    if args.fail_on_current_problem and result.has_current_problems:
         return EXIT_FAILURES_FOUND
     return EXIT_SUCCESS
 

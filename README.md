@@ -169,6 +169,23 @@ python -m agent_ci_failure_correlator audit-github \
   --fail-on-current-problem
 ```
 
+如果你已经把失败邮件或日志保存到了本地目录，可以直接审计收件箱：工具会先解析输入里的仓库、workflow、branch、run URL，再检查这些仓库当前 Actions head，把每条历史失败标成 `current`、`stale` 或 `unknown`。
+
+```bash
+python -m agent_ci_failure_correlator audit-inbox exported-failure-mails \
+  --format markdown \
+  --output inbox-audit.md
+```
+
+输出 JSON，并在仍有匹配当前红灯时失败：
+
+```bash
+python -m agent_ci_failure_correlator audit-inbox exported-failure-mails \
+  --format json \
+  --output inbox-audit.json \
+  --fail-on-current-problem
+```
+
 常用参数：
 
 - `--similarity-threshold 0.56`：调整聚类阈值，越低越容易合并。
@@ -203,7 +220,15 @@ python -m agent_ci_failure_correlator audit-github \
 - `--fail-on-current-problem`：发现当前失败或 pending workflow head 时返回退出码 `1`。
 - `--fail-on-warning`：有仓库无法审计时返回退出码 `3`。
 
-推荐处理顺序：收到大量 CI 失败邮件时，先运行 `audit-github`。如果结果是 `CLEAR`，这些邮件多半是历史失败或已被后续提交修复；如果仍有 current problems，再运行 `fetch-github` + `analyze` 聚类真正需要修复的日志。
+`audit-inbox` 常用参数：
+
+- `inputs`：本地保存的 `.eml`、`.txt`、`.log`、`.json`、`.jsonl`、JUnit XML 文件或目录。
+- `--format markdown|json`：Markdown 用于人工收件箱 triage，JSON 使用稳定 schema `agent-ci-failure-correlator.inbox-audit.v1`。
+- `--no-open-prs` / `--ignore-pending`：与 `audit-github` 相同，控制审计范围和 pending 语义。
+- `--fail-on-current-problem`：只有当历史邮件能匹配到当前仍失败或 pending 的 workflow/branch 时返回退出码 `1`。
+- `--fail-on-warning`：解析不到仓库、GitHub API rate limit、权限不足等 warning 时返回退出码 `3`。
+
+推荐处理顺序：收到大量 CI 失败邮件时，如果手里有邮件或日志目录，先运行 `audit-inbox`。如果结果是 `CLEAR`，这些邮件多半是历史失败或已被后续提交修复；如果是 `ACTION NEEDED`，再运行 `fetch-github` + `analyze` 聚类当前仍需要修复的日志；如果只有 owner/repo 范围而没有邮件目录，先用 `audit-github` 看当前红灯。
 
 ### 从 GitHub 抓取失败记录
 
@@ -376,6 +401,18 @@ result = audit_current_actions(
 )
 
 print(render_current_audit_markdown(result))
+print(result.to_dict()["summary"])
+```
+
+审计本地失败邮件收件箱，并区分历史噪音与当前仍红的失败：
+
+```python
+from agent_ci_failure_correlator import GitHubClient, audit_inbox_paths, render_inbox_audit_markdown
+
+client = GitHubClient(token="...", timeout=20)
+result = audit_inbox_paths(["exported-failure-mails"], client=client)
+
+print(render_inbox_audit_markdown(result))
 print(result.to_dict()["summary"])
 ```
 
@@ -627,6 +664,7 @@ python -m agent_ci_failure_correlator analyze examples/inputs --format json --ou
 - `agent_ci_failure_correlator/clusterer.py`：相似度聚类与置信度。
 - `agent_ci_failure_correlator/report.py`：Markdown/JSON/SARIF 报告。
 - `agent_ci_failure_correlator/github_fetcher.py`：GitHub Actions API 抓取与日志脱敏。
+- `agent_ci_failure_correlator/inbox_audit.py`：失败邮件/日志收件箱与当前 Actions 状态联查。
 - `agent_ci_failure_correlator/cli.py`：命令行入口与退出码。
 - `tests/`：单元测试。
 - `examples/`：配置和示例输入。
@@ -806,6 +844,23 @@ python -m agent_ci_failure_correlator audit-github \
   --fail-on-current-problem
 ```
 
+If you already saved the failure emails or logs locally, audit the inbox directly. The tool parses repositories, workflows, branches, and run URLs from the inputs, checks the current Actions heads for those repositories, and classifies each historical failure as `current`, `stale`, or `unknown`.
+
+```bash
+python -m agent_ci_failure_correlator audit-inbox exported-failure-mails \
+  --format markdown \
+  --output inbox-audit.md
+```
+
+Emit JSON and fail when a historical inbox item still maps to a current red or pending head:
+
+```bash
+python -m agent_ci_failure_correlator audit-inbox exported-failure-mails \
+  --format json \
+  --output inbox-audit.json \
+  --fail-on-current-problem
+```
+
 Useful flags:
 
 - `--similarity-threshold 0.56`: lower values merge more aggressively.
@@ -840,7 +895,15 @@ Useful `audit-github` flags:
 - `--fail-on-current-problem`: exit `1` when a current failing or pending workflow head exists.
 - `--fail-on-warning`: exit `3` when a repository could not be audited.
 
-Recommended workflow: when many CI failure emails arrive, run `audit-github` first. If the result is `CLEAR`, the emails are probably historical failures already fixed by later commits or reruns. If current problems remain, run `fetch-github` and `analyze` to cluster the logs that still need repair.
+Useful `audit-inbox` flags:
+
+- `inputs`: saved `.eml`, `.txt`, `.log`, `.json`, `.jsonl`, JUnit XML files, or directories.
+- `--format markdown|json`: Markdown is for human inbox triage; JSON uses the stable `agent-ci-failure-correlator.inbox-audit.v1` schema.
+- `--no-open-prs` / `--ignore-pending`: same semantics as `audit-github`.
+- `--fail-on-current-problem`: exit `1` only when an inbox event matches a current failing or pending workflow/branch.
+- `--fail-on-warning`: exit `3` for missing repository metadata, API rate limits, permission issues, or other audit warnings.
+
+Recommended workflow: when many CI failure emails arrive and you have the saved email/log directory, run `audit-inbox` first. If it returns `CLEAR`, the messages are probably historical failures already fixed by later commits or reruns. If it returns `ACTION NEEDED`, run `fetch-github` and `analyze` to cluster the current logs that still need repair. If you only know an owner or repository list, use `audit-github` first.
 
 ### Fetch From GitHub
 
@@ -1013,6 +1076,18 @@ result = audit_current_actions(
 )
 
 print(render_current_audit_markdown(result))
+print(result.to_dict()["summary"])
+```
+
+Audit a local inbox of saved failure emails and separate historical noise from failures that are still current:
+
+```python
+from agent_ci_failure_correlator import GitHubClient, audit_inbox_paths, render_inbox_audit_markdown
+
+client = GitHubClient(token="...", timeout=20)
+result = audit_inbox_paths(["exported-failure-mails"], client=client)
+
+print(render_inbox_audit_markdown(result))
 print(result.to_dict()["summary"])
 ```
 

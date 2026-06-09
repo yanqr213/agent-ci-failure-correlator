@@ -68,6 +68,20 @@ ModuleNotFoundError: No module named 'shared_auth'
         self.assertEqual(events[0].source.run_id, "77")
         self.assertIn("javascript-dependency", events[0].root_cause_labels)
 
+    def test_parse_github_actions_subject_workflow_and_branch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "notification.txt"
+            path.write_text(
+                "Subject: [org/api] Run failed: CI - release/v1 (abc123)\n"
+                "Run URL: https://github.com/org/api/actions/runs/88\n"
+                "ModuleNotFoundError: No module named shared_auth\n",
+                encoding="utf-8",
+            )
+            events = parse_file(path, self.config)
+
+        self.assertEqual(events[0].source.workflow, "CI")
+        self.assertEqual(events[0].metadata["branch"], "release/v1")
+
     def test_parse_job_json_failed_step(self):
         data = {
             "repository": "org/a",
